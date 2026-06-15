@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FMK-Blind</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="fmkb-header">
+    <h1 class="fmkb-title">FMK-Blind 차단 목록</h1>
+    <span class="fmkb-count" id="fmkb-count" aria-live="polite">총 –명</span>
+  </header>
+
+  <div class="fmkb-search-wrap">
+    <input
+      type="search"
+      id="fmkb-search"
+      class="fmkb-search"
+      placeholder="닉네임 또는 UID 검색"
+      autocomplete="off"
+      spellcheck="false"
+      aria-label="차단 목록 검색"
+    />
+  </div>
+
+  <p class="fmkb-notice" id="fmkb-notice">
+    해제 후 <strong>이미 열린 페이지는 새로고침</strong>해야 반영됩니다.
+  </p>
+
+  <main class="fmkb-body">
+    <!-- 차단 항목이 동적으로 채워짐: 각 항목 = 닉네임 + UID + 차단 해제 버튼 -->
+    <ul class="fmkb-list" id="fmkb-list" aria-label="차단된 유저 목록"></ul>
+
+    <!-- 빈 목록 / 검색 무결과 / 로드 오류 등 상태 메시지 -->
+    <div class="fmkb-state" id="fmkb-state" role="status" hidden></div>
+  </main>
+
+  <!-- 공유 저장 계층을 먼저 로드한 뒤 popup.js. -->
+  <!-- 단일 출처: content script와 동일 파일(src/content/10-store.js)을 재사용(별도 사본 금지). -->
+  <script src="../content/10-store.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

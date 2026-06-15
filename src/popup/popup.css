@@ -1,0 +1,210 @@
+/* FMK-Blind 팝업 — 바닐라 CSS, 의존성 없음 */
+
+:root {
+  --fmkb-bg: #ffffff;
+  --fmkb-fg: #1a1a1a;
+  --fmkb-muted: #6b7280;
+  --fmkb-border: #e5e7eb;
+  --fmkb-hover: #f3f4f6;
+  --fmkb-accent: #2563eb;
+  --fmkb-danger: #dc2626;
+  --fmkb-danger-hover: #b91c1c;
+  --fmkb-notice-bg: #fff7ed;
+  --fmkb-notice-fg: #9a3412;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 360px;
+  /* 팝업 최대 높이 제약(크롬 ~600px). 목록은 내부 스크롤. */
+  max-height: 560px;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  font-size: 13px;
+  color: var(--fmkb-fg);
+  background: var(--fmkb-bg);
+}
+
+/* ── 헤더 ── */
+.fmkb-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--fmkb-border);
+}
+
+.fmkb-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.fmkb-count {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fmkb-muted);
+  white-space: nowrap;
+}
+
+/* ── 검색 ── */
+.fmkb-search-wrap {
+  padding: 10px 14px 0;
+}
+
+.fmkb-search {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--fmkb-fg);
+  border: 1px solid var(--fmkb-border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--fmkb-bg);
+}
+
+.fmkb-search:focus {
+  border-color: var(--fmkb-accent);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+/* ── 안내 문구(MVP 제약: 새로고침 후 반영) ── */
+.fmkb-notice {
+  margin: 10px 14px 0;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fmkb-notice-fg);
+  background: var(--fmkb-notice-bg);
+  border-radius: 6px;
+}
+
+.fmkb-notice strong {
+  font-weight: 700;
+}
+
+/* ── 목록 영역 ── */
+.fmkb-body {
+  flex: 1 1 auto;
+  min-height: 80px;
+  overflow-y: auto;
+  padding: 8px 8px 10px;
+}
+
+.fmkb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fmkb-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px;
+  border-radius: 6px;
+}
+
+.fmkb-item + .fmkb-item {
+  border-top: 1px solid var(--fmkb-border);
+}
+
+.fmkb-item:hover {
+  background: var(--fmkb-hover);
+}
+
+.fmkb-item-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fmkb-item-nick {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fmkb-item-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--fmkb-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fmkb-item-uid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ── 차단 해제 버튼 ── */
+.fmkb-unblock {
+  flex: none;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fmkb-danger);
+  background: transparent;
+  border: 1px solid var(--fmkb-danger);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.fmkb-unblock:hover {
+  background: var(--fmkb-danger);
+  color: #fff;
+}
+
+.fmkb-unblock:active {
+  background: var(--fmkb-danger-hover);
+  border-color: var(--fmkb-danger-hover);
+}
+
+.fmkb-unblock:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── 상태 메시지(빈 목록 / 무결과 / 오류) ── */
+.fmkb-state {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-line; /* 메시지 줄바꿈(\n) 렌더 */
+  color: var(--fmkb-muted);
+}
+
+.fmkb-state[data-kind="error"] {
+  color: var(--fmkb-danger);
+}
+
+.fmkb-state-emoji {
+  display: block;
+  font-size: 22px;
+  margin-bottom: 6px;
+}
+
+/* 검색어 강조 표시 */
+.fmkb-mark {
+  background: #fde68a;
+  border-radius: 2px;
+  padding: 0 1px;
+}

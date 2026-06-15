@@ -1,0 +1,66 @@
+/* FMK-Blind — content script 스타일 */
+
+/* 숨김: 사이트 자체 CSS 우선순위 충돌 방지를 위해 !important.
+   클래스 토글만으로 복구 가능(인라인 style 미사용). */
+.fmkb-hidden {
+  display: none !important;
+}
+
+/* ── 우클릭 커스텀 메뉴 ── */
+#fmkb-context-menu {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 150px;
+  max-width: 320px;
+  padding: 4px 0;
+  background: #ffffff;
+  border: 1px solid #d4d4d4;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  font-size: 13px;
+  line-height: 1.2;
+  color: #222222;
+  user-select: none;
+  cursor: default;
+}
+
+#fmkb-context-menu .fmkb-menu-item {
+  padding: 8px 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#fmkb-context-menu .fmkb-menu-item:hover {
+  background: #f0524d;
+  color: #ffffff;
+}
+
+/* ── 토스트 ── */
+#fmkb-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%) translateY(12px);
+  z-index: 2147483647;
+  max-width: 80vw;
+  padding: 10px 18px;
+  background: rgba(20, 20, 20, 0.92);
+  color: #ffffff;
+  border-radius: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+#fmkb-toast.fmkb-toast-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

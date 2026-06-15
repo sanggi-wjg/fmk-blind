@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "FMK-Blind",
+  "version": "0.1.0",
+  "description": "에펨코리아(PC) 특정 유저 블라인드 확장",
+  "permissions": ["storage"],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "raynor-back@proton.me",
+      "strict_min_version": "115.0"
+    }
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.fmkorea.com/*"],
+      "js": [
+        "src/content/00-namespace.js",
+        "src/content/10-store.js",
+        "src/content/20-selectors.js",
+        "src/content/30-hide.js",
+        "src/content/40-contextmenu.js",
+        "src/content/50-toast.js",
+        "src/content/99-main.js"
+      ],
+      "css": ["src/content.css"],
+      "run_at": "document_end"
+    }
+  ]
+}

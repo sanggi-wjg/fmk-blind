@@ -1,0 +1,34 @@
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- 확장 패키징 산출물 (Chrome 웹스토어 업로드용 zip 등) ---
+*.zip
+*.crx
+*.pem
+/dist/
+/build/
+
+# --- (혹시 모를) Node 도구 ---
+/node_modules/
+
+# --- Claude Code 로컬 전용 설정 (개인 오버라이드, 공유 X) ---
+.claude/settings.local.json
