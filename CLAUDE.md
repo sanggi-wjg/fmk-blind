@@ -6,7 +6,7 @@
 
 **목표:** content script + sync 샤딩 저장 + 팝업으로 구성된 fmkorea 유저 차단 확장을 에이전트 팀으로 구현·검증·유지보수한다.
 
-**트리거:** 확장 구현/MVP 빌드, content script·저장 계층·팝업 작성, manifest 구성, fmkorea 셀렉터 수정, 차단 기능 작업, 그리고 후속 작업(재실행·수정·보완·부분 재실행·TODO 기능 추가: MutationObserver/모바일/압축/내보내기/onChanged) 요청 시 `fmk-extension-orchestrator` 스킬을 사용하라. 단순 질문은 직접 응답 가능. **기능 단위는 최신 main 기준 브랜치 생성(Phase 0.5) → 구현·검증 → PR 생성(Phase 6)까지가 1 작업 단위이며, PR에서 정지하고 머지는 사용자 몫**(머지 시 `.github/workflows/release.yml`이 manifest 버전 기준 릴리즈 자동 생성). **커밋 전에는 반드시 리뷰를 먼저 수행한다**(실질 코드 변경=`extension-reviewer` 에이전트, 사소·기계적 변경=인라인 리뷰). blocker/major 이슈가 있으면 **커밋하지 않고** 수정·재리뷰하거나 사용자에게 보고해 커밋 여부를 결정한다.
+**트리거:** 확장 구현/MVP 빌드, content script·저장 계층·팝업 작성, manifest 구성, fmkorea 셀렉터 수정, 차단 기능 작업, 그리고 후속 작업(재실행·수정·보완·부분 재실행·TODO 기능 추가: MutationObserver/모바일/압축/내보내기/onChanged) 요청 시 `fmk-extension-orchestrator` 스킬을 사용하라. 단순 질문은 직접 응답 가능. **기능 단위는 최신 main 기준 브랜치 생성(Phase 0.5) → 구현·검증 → PR 생성(Phase 6)까지가 1 작업 단위이며, PR에서 정지하고 머지는 사용자 몫**(머지 시 `.github/workflows/release.yml`이 manifest 버전 기준 릴리즈 자동 생성). **커밋 전에는 반드시 리뷰를 먼저 수행한다**(실질 코드 변경=`extension-reviewer` 에이전트, 사소·기계적 변경=인라인 리뷰). blocker/major 이슈가 있으면 **커밋하지 않고** 수정·재리뷰하거나 사용자에게 보고해 커밋 여부를 결정한다. **문서 최신성**: 코드·동작·계약을 바꾸면 같은 작업 단위에서 관련 문서(스킬·`store-api-contract.md`·`PLAN.md`·`README.md`·`TODO.md`·`CLAUDE.md`)를 함께 갱신해 드리프트를 남기지 않는다.
 
 **변경 이력:**
 | 날짜 | 변경 내용 | 대상 | 사유 |
