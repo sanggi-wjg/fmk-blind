@@ -364,3 +364,65 @@ popup `onUnblock`(popup.js:230) = `Promise.resolve(store.unblock(String(it.uid))
 
 ### 검증 아티팩트 추가
 - `/tmp/store_persist_test.js` — **28/28**: S1~S9(즉시영속·직렬화·coalesce·alternation·C7) + 공개 6-API. chrome.storage.sync mock + 실제 10-store.js 로드.
+
+---
+
+## 재검증 #3 — 라이브 동기(C9) `chrome.storage.onChanged` 정적·경계면 검증 (2026-06-15, Task: onChange)
+
+- 담당: extension-qa
+- 범위: 가산적 7번째 API `onChange(cb)->unsubscribe` + `rebuildFromStorage` 추출 + onChanged 리스너 + 단일 직렬화 큐(`serialTail`/`enqueueSerial`) + content(99-main)·popup(popup.js) 배선
+- 방법: **정적 정합성 + 경계면 교차 비교만** 수행. 다중 컨텍스트(탭↔팝업 onChanged 전파) 런타임 동작은 Node mock이 실 Chrome 직렬화·다중 컨텍스트를 재현 못 하므로 **"실브라우저 검증 필요(미검증)"로 명시**(MEMORY 교훈: mock 거짓 PASS 전례).
+- 판정: **blocker 0 / major 0 / minor 0.** 정적·경계면 전 항목 PASS. 다중 컨텍스트 라이브 전파는 미검증(아래 명시).
+
+### V1. 문법 검사 — PASS
+`node --check` 통과: `10-store.js`, `99-main.js`, `popup.js`, `30-hide.js` 모두 OK.
+
+### V2. 정적 정합성: manifest js ↔ 실제 파일 7개 — PASS
+- `manifest.json` `content_scripts[0].js` 7개 항목 ↔ `src/content/*.js` 7개 파일 1:1 실재 확인(00-namespace,10-store,20-selectors,30-hide,40-contextmenu,50-toast,99-main). MISS 0.
+- 로드 순서: `10-store.js`가 소비자(99-main:51)보다 앞. `00-namespace.js`(NS.hide 등 상수/네임스페이스 정의)가 30-hide·99-main보다 앞. onChange 추가로 깨진 참조 없음.
+- `src/content.css`(manifest css), `src/popup/popup.html`(action.default_popup) 실재.
+- popup.html: `<script src="../content/10-store.js">`(41행) → `<script src="popup.js">`(42행) 순서 — popup이 store를 소비자보다 먼저 로드(단일 출처, 사본 금지 준수).
+
+### V3. 경계면 — onChange 계약 일치 — PASS
+**store 정의(10-store.js:511-518)**: `onChange: function (cb)` → `typeof cb !== 'function'`이면 no-op unsub 반환, 아니면 `changeSubscribers.push(cb)` 후 `unsubscribe()` 반환. 콜백 인자 = `applyExternalChange`(98-118)가 만든 `{ added: string[], removed: string[] }`(uid 문자열 배열).
+
+- **content 소비(99-main.js:51-56)**: `if (typeof store.onChange === 'function')` 가드 후 `store.onChange((d) => { d.added.forEach(uid => NS.hide.hideByUid(uid)); d.removed.forEach(uid => NS.hide.unhideByUid(uid)); })`. → `d.added`/`d.removed`가 string[]라는 store 출력과 정확히 일치. uid를 문자열 그대로 hide 함수에 전달(XSS 무관 — innerHTML 미사용). **일치.**
+- **popup 소비(popup.js:301-305)**: `if (typeof store.onChange === 'function')` 가드 후 `store.onChange(function () { refresh(); })`. diff 인자 미사용 — `refresh()`가 `store.list()`/`count()` 전체 재조회로 일괄 갱신. store 계약상 콜백 무인자 호출도 안전(자바스크립트 인자 무시). **일치.**
+- 반환값 `unsubscribe`: content는 단일 페이지 생명주기라 미보관(페이지 언로드 시 컨텍스트 GC), popup도 단수명이라 미보관 — 둘 다 누수 아님(주석에 근거 명시 popup.js:294-295). 계약상 unsubscribe는 선택 사용.
+
+### V4. 경계면 — NS.hide.hideByUid / unhideByUid 존재·시그니처 — PASS
+- `hideByUid(uid)` 정의: 30-hide.js:31 — `AUTHOR_ANCHOR_SELECTOR` 전체 훑어 `extractUid(anchor) === uid`인 앵커의 컨테이너 숨김. 인자 = uid 문자열. **존재·시그니처 일치.**
+- `unhideByUid(uid)` 정의: 30-hide.js:21 — `.fmkb-hidden[data-fmkb-uid="<uid>"]` 셀렉터로 복구. 인자 = uid 문자열. **존재·시그니처 일치.**
+- 호출처 4곳(99-main.js:36,42,53,54) 모두 uid 문자열 전달. onChange 신규 배선(53,54)이 기존 우클릭 배선(36,42)과 **동일 함수·동일 시그니처 재사용** — 신규 표면 없음, 회귀 위험 낮음.
+- 주의(설계상 한계, 버그 아님): `hideByUid`/`unhideByUid`는 **현재 DOM에만** 작용. AJAX/무한스크롤 신규 노드는 onChange로 즉시 반영 안 됨(MutationObserver는 별개 TODO) — 계약·주석에 명시됨(99-main.js:50). v1 수용.
+
+### V5. popup refresh() onChange 콜백 재사용 안전성 — PASS
+- `refresh()`(popup.js:247-258): `store.list()` try/catch → `allItems` 갱신 → `updateCount()` → `render()`. 부수효과는 화면 갱신뿐(스토리지 쓰기 없음). onChange 콜백에서 반복 호출돼도 멱등·안전.
+- **중복 갱신 없음**: 팝업 자신의 `onUnblock`은 자기-쓰기 → store가 빈 diff로 콜백 미호출(V7). 따라서 `onUnblock`의 `.then(refresh)`(popup.js:237)와 onChange의 `refresh()`가 동시 발화하지 않음. 외부 변경시에만 onChange→refresh.
+- 구독 등록은 `init`의 `load().then(...)` 안에서 **1회만**(popup.js:301). init 자체가 DOMContentLoaded/즉시 1회 실행 → 중복 구독 없음.
+
+### V6. 기존 6 API FROZEN — PASS (회귀 없음)
+- 시그니처 6개 모두 보존: `load()`(425) `isBlocked(uid)`(436) `block(uid,nick)`(449) `unblock(uid)`(468) `list()`(478) `count()`(491). onChange는 7번째로 **추가만**(가산적).
+- `list()` 반환 필드 `{uid, nick, addedAt}`(481) desc 정렬·복사본 — 종전과 동일.
+- `block`/`unblock`은 여전히 `flushPending()`(=`persistNow`) 반환 → C3(즉시·awaitable 영속화) 불변. 리팩터(rebuildFromStorage 추출)가 block/unblock 경로를 건드리지 않음.
+
+### V7. 에코/자기-쓰기 무한루프 차단 — PASS (정적 논증)
+- `applyExternalChange`(98-118): rebuild **전** `before = new Set(map.keys())` 스냅샷 → `rebuildFromStorage()`로 map 교체 → `after = map`. before↔after **키셋 diff**만 added/removed로 산출. `if (added.length===0 && removed.length===0) return;`(114) → 자기-쓰기 에코(자신의 persist가 유발한 onChanged)는 디스크 키셋이 메모리와 동일하므로 빈 diff → **콜백 미호출(no-op)**.
+- onChanged 핸들러(142-152)는 `rebuildFromStorage`(읽기 전용, 절대 sync write 안 함)만 호출 → **피드백 루프 구조적 부재**. enqueueSerial로 persist와 같은 큐에서 순차 실행 → 인터리브 없음(rebuild는 진행 중 로컬 write 커밋 뒤 실행).
+- ⚠️ 단, "빈 diff = no-op"이 **실제로 성립하려면** 자기-쓰기 후 디스크에서 읽은 청크가 메모리 키셋과 정확히 같아야 한다. **키셋(uid 집합) 기준**이므로 nick/값 변경·청크 직렬화 차이가 있어도 키 추가/삭제가 없으면 안전. 이 로직은 정적으로 타당하나, **실 Chrome onChanged 전파 타이밍·직렬화 차이에서의 최종 무한루프 부재는 실브라우저 검증 필요(미검증, 아래)**.
+
+### V8. 리스너 생명주기 — PASS (정적), 다중 컨텍스트 전파는 미검증
+- **단일 등록**: store.js 모듈 IIFE는 line 35 `if (root.FMKBlind.store) return;`(중복 주입 가드)가 line 522 `installOnChangedListener()`·line 524 store 노출보다 **먼저** 실행됨. 따라서 한 컨텍스트에 store.js가 두 번 주입돼도 두 번째는 line 35에서 조기 반환 → `onChanged.addListener`는 컨텍스트당 **정확히 1회**.
+- **존재 가드**: `installOnChangedListener`(137-141)가 `chrome.storage.onChanged.addListener`의 typeof를 확인 후에만 등록 → 미지원 컨텍스트에서 안전(라이브 동기만 비활성, load 시점 동기화는 유효). 실제 `.addListener(` 호출은 142행 **1곳뿐**(139행은 typeof 가드).
+- **영역 필터**: 리스너가 `areaName !== 'sync'` 조기 반환 + `bl_meta`/`/^bl_\d+$/` 키만 relevant 처리(143-149) → 무관 키 변경에 rebuild 안 함.
+- ⚠️ **미검증(실브라우저 필요)**: content 탭 ↔ popup 간 onChanged **실제 전파**, 자기-쓰기 에코가 실 Chrome 직렬화에서 정말 빈 diff인지, 외부 변경이 열린 탭에 새로고침 없이 반영되는지는 **Node mock으로 거짓 PASS 전례**가 있어 정적 검증으로 단정 불가. → **실브라우저 콘솔 검증 필요.**
+
+### V9. 샤딩 경계 무결 — PASS
+- `rebuildFromStorage` 추출(346-406)은 기존 `load`의 복원 로직을 **함수로 뽑은 것**일 뿐: 8KB(`CHUNK_BUDGET=7168`)·100KB(`TOTAL_BUDGET=102400`)·`QUOTA_WARN` 상수 불변, `buildChunks`(206)·`persistOnce`(230)의 청크 diff(`persistedChunks[i] !== newVals[i]`)·stale remove(252)·`bl_meta` 복원(405) 로직 변경 없음.
+- `doLoad`(409-415)는 이제 `rebuildFromStorage()` 위임 — 동작 동일(멱등 load는 store.load의 loadPromise 가드 426으로 유지).
+- onChanged 경로의 rebuild가 `persistedChunks`를 디스크 권위로 리셋(393-404) → 계약 I2 해소 근거(외부 해제 후 로컬 block이 stale 청크 되쓰지 않음). 이 또한 정적 논증 — 실 직렬화 동등성은 실브라우저 판정.
+
+### 재검증 #3 미검증 항목(통과 처리 금지 — 명시)
+- **다중 컨텍스트 라이브 전파(탭↔팝업↔다른 기기)**: onChanged 실제 발화·전파 타이밍, 자기-쓰기 에코의 실 Chrome 빈-diff 성립, 외부 변경의 새로고침-없는 DOM 반영 — **전부 실브라우저 콘솔 검증 필요.** Node mock은 실 Chrome 직렬화·다중 컨텍스트를 재현 못 해 과거 resurrection 버그에 거짓 PASS를 준 전례 있음(CLAUDE.md/MEMORY). **정적·경계면만 PASS이며, 라이브 동기 "정상"은 단정하지 않음.**
+
+> **재검증 #3 판정: 정적·경계면 PASS, blocker/major/minor 0건.** onChange는 가산적·비파괴로 6 API FROZEN 무회귀, content/popup 소비가 시그니처 일치, hide 함수 재사용 정합, 리스너 컨텍스트당 1회·존재 가드 안전, 에코/피드백 루프 구조적 부재. **단, 다중 컨텍스트 onChanged 전파·에코 무해성·새로고침-없는 반영은 실브라우저 검증 필요(미검증).**
