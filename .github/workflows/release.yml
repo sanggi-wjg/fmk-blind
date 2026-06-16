@@ -1,0 +1,63 @@
+name: Release on main
+
+# main에 push/머지될 때, manifest.json의 version으로 GitHub Release를 만들고
+# 확장 zip을 릴리즈 자산으로 첨부한다. 같은 버전 태그(v{version})가 이미 있으면 건너뛴다.
+# → version을 올린 머지에서만 릴리즈 1개가 생성된다(중복 방지).
+
+on:
+  push:
+    branches: [main]
+
+# 릴리즈 생성·자산 업로드에 필요한 쓰기 권한(기본 GITHUB_TOKEN 사용).
+permissions:
+  contents: write
+
+# 동시 푸시가 같은 릴리즈를 두 번 만들려는 경쟁 방지(순차 실행).
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version from manifest
+        id: ver
+        run: echo "version=$(jq -r .version manifest.json)" >> "$GITHUB_OUTPUT"
+
+      # 주의: version 값은 셸 본문에 직접 보간하지 않고 env로 받아 "$VERSION"으로 사용
+      # (GitHub Actions 스크립트 인젝션 방지 표준).
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "릴리즈 v$VERSION 이미 존재 — 건너뜀."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build extension zip
+        if: steps.check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          zip -r "fmk-blind-$VERSION.zip" \
+            manifest.json src icons README.md LICENSE -x '*.DS_Store'
+
+      - name: Create release and upload zip
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            "fmk-blind-$VERSION.zip" \
+            --title "v$VERSION" \
+            --generate-notes

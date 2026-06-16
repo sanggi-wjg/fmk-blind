@@ -288,6 +288,21 @@
       })
       .then(function () {
         refresh();
+
+        // 라이브 동기(가산적 7번째 API onChange, 계약 C9): 팝업이 열려 있는 동안 외부
+        // (fmkorea 탭 우클릭 차단/해제, 다른 기기 sync)에서 목록이 바뀌면 자동 재렌더.
+        // - 최초 load→refresh 이후 1회만 등록(중복 구독 방지). 구독은 팝업 종료와 함께 GC되므로
+        //   별도 unsubscribe 불필요(단수명 팝업).
+        // - diff 인자는 사용하지 않는다 — store.list()/count() 전체 재조회로 충분하고,
+        //   기존 refresh()가 캐시/인원수/렌더(검색 필터 포함)를 일괄 갱신한다.
+        // - 팝업 자신의 onUnblock은 '자기-쓰기'라 diff가 비어 이 콜백이 호출되지 않으므로
+        //   onUnblock의 명시적 .then(refresh)와 중복 갱신이 없다(계약 §C9·onChange 주석).
+        // - typeof 가드: onChange 미탑재(구버전 store)에도 안전 — 단순히 라이브 동기만 비활성.
+        if (typeof store.onChange === 'function') {
+          store.onChange(function () {
+            refresh();
+          });
+        }
       });
   }
 

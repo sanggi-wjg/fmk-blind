@@ -43,6 +43,17 @@
         NS.toast.show((nick || uid) + ' 님을 차단 해제했습니다');
       },
     });
+
+    // 3) 라이브 동기(C9) — 팝업/다른 탭/다른 기기의 변경을 새로고침 없이 현재 탭에 반영.
+    //    store.onChange는 외부 sync 변경 시에만 diff를 통지한다(자기-쓰기 에코는 빈 diff → 미호출).
+    //    added → 현재 DOM에서 해당 작성자 컨테이너 숨김, removed → 복구. 둘 다 30-hide의 기존 함수 재사용.
+    //    범위: 이미 로드된 DOM만 즉시 반영. AJAX/무한스크롤로 새로 삽입되는 DOM은 별개 TODO(MutationObserver).
+    if (typeof store.onChange === 'function') {
+      store.onChange((d) => {
+        d.added.forEach((uid) => NS.hide.hideByUid(uid));
+        d.removed.forEach((uid) => NS.hide.unhideByUid(uid));
+      });
+    }
   }
 
   // run_at:document_end 라 보통 즉시 실행되지만, 방어적으로 DOMContentLoaded 를 보장한다.
