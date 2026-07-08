@@ -4,8 +4,9 @@
  * content script(content_scripts에 순서 로드)와 popup(<script src>)이
  * **동일 파일을 공유**한다. 상태는 chrome.storage.sync로 동기화된다.
  *
- * 공개 계약: window.FMKBlind.store = { load, isBlocked, block, unblock, list, count, onChange }
+ * 공개 계약: window.FMKBlind.store = { load, isBlocked, block, unblock, list, count, onChange, importMany }
  *   - 6개(load~count)는 v1 FROZEN. onChange는 가산적 7번째 선택 API(2026-06-15, 라이브 동기 C9).
+ *     importMany는 가산적 8번째 선택 API(2026-07-08, 배치 가져오기 C10).
  * 자세한 시그니처/불변식: .claude/workspace/store-api-contract.md
  *
  * 저장 레이아웃:
@@ -25,7 +26,10 @@
  *   persist와 같은 직렬화 큐에서 순차 실행 → 피드백 루프·인터리브 없음. reconcile + 스냅샷 정합이
  *   잔여 엣지 I2(해제 후 되살림)와 마이크로태스크 경쟁(미영속 항목 유실)을 함께 닫는다.
  *
- * v1 범위 밖(구현 금지): 압축 / 내보내기·가져오기
+ * v1 범위 밖(구현 금지): 압축.
+ *   내보내기: 새 API 불필요 — 팝업이 list()(uid/nick/addedAt 복사본) 결과를 JSON으로 직렬화.
+ *   가져오기: importMany(items)로 배치 반영 후 1회 flush(2026-07-08 구현). 항목별 block() 남발로 인한
+ *             sync 레이트리밋(분당 120/시간당 1,800) 압박을 피한다.
  */
 (function () {
   'use strict';
@@ -590,6 +594,76 @@
         var i = changeSubscribers.indexOf(cb);
         if (i !== -1) changeSubscribers.splice(i, 1);
       };
+    },
+
+    /**
+     * (선택·가산적 8번째 API — 2026-07-08) 차단 목록 배치 가져오기(import).
+     * 내보낸 JSON(팝업이 list() 결과를 직렬화한 것)을 대량으로 메모리에 **일괄 반영한 뒤 1회 직렬 flush**한다.
+     * 항목별 block() 호출을 피해 sync 레이트리밋(분당 120/시간당 1,800) 압박을 줄이는 것이 목적(TODO Q7).
+     *
+     * 머지 시맨틱(C10):
+     *   - 새 uid          → 추가. 가져온 nick·addedAt 사용(addedAt 없거나 비정상이면 현재 시각).
+     *   - 이미 있는 uid   → **로컬 유지·스킵**(skipped++). nick/addedAt를 덮지 않는다.
+     *   - 비정상 항목      → invalid++ (throw 없이 항목 단위로 건너뜀). 판정: 객체 아님 / uid 결측 /
+     *                        uid가 숫자열(^\d+$) 아님. uid는 C1대로 String(uid)로 정규화 후 검증.
+     *
+     * 영속화: 메모리 반영 후 **flushPending() 1회**(기존 persist 경로 재사용 — 별도 쓰기 경로 없음).
+     *   반환 Promise resolve = **chrome.storage.sync 쓰기 완료**(C3 준용). added가 0이면 쓰기 없이 즉시 resolve(멱등).
+     *
+     * C9 reconcile 상호작용: importMany로 추가된 미영속 항목은 로컬 block과 동일하게 "prevMap(persistedChunks)
+     *   에도 디스크에도 없는 로컬 미영속 항목"이므로, flush 대기 중 외부 onChanged가 끼어들어도
+     *   applyExternalChange의 reconcile가 손대지 않아 보존된다(map은 동기적으로 이미 갱신됨 → block과 동형).
+     *
+     * 용량: items가 100KB 한도를 넘길 수 있다. 여기서 사전 추정 초과 시 콘솔 경고(차단하지 않음 — best-effort),
+     *   실제 쓰기 때 persistOnce의 QUOTA_WARN 경로가 다시 검증한다.
+     *
+     * @param {Array<{uid: string|number, nick?: string, addedAt?: number}>} items
+     * @returns {Promise<{added: number, skipped: number, invalid: number}>}
+     */
+    importMany: function (items) {
+      var result = { added: 0, skipped: 0, invalid: 0 };
+
+      if (!Array.isArray(items)) {
+        // items 자체가 배열이 아니면 반영할 항목이 없다 → no-op(멱등). throw 금지.
+        console.warn('[FMKBlind.store] importMany: items가 배열이 아닙니다 — 무시.');
+        return Promise.resolve(result);
+      }
+
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        // 항목이 객체가 아니거나 uid가 결측이면 비정상.
+        if (!it || typeof it !== 'object') { result.invalid++; continue; }
+        var rawUid = it.uid;
+        if (rawUid === undefined || rawUid === null) { result.invalid++; continue; }
+        var uid = String(rawUid);            // C1: 문자열 정규화
+        if (!/^\d+$/.test(uid)) { result.invalid++; continue; } // 숫자열만 유효(member_{UID} 규칙)
+        if (map.has(uid)) { result.skipped++; continue; }       // 이미 있으면 로컬 유지·스킵
+
+        var nick = (typeof it.nick === 'string') ? it.nick : '';
+        var addedAt = Number(it.addedAt);
+        if (!isFinite(addedAt) || addedAt <= 0) addedAt = nowMs(); // 없거나 비정상 → 현재 시각
+        map.set(uid, { nick: nick, addedAt: addedAt });
+        result.added++;
+      }
+
+      if (result.added === 0) {
+        // 추가된 항목이 없으면 쓰기 불필요 → 즉시 resolve(멱등). 전량 중복/비정상/빈 배열 포함.
+        return Promise.resolve(result);
+      }
+
+      // 사전 용량 추정(best-effort 경고 — 차단하지 않음). 근사치이므로 조기 경고가 목적이며,
+      // 실제 청킹·쓰기 시 persistOnce가 QUOTA_WARN로 정밀 재확인한다.
+      try {
+        var estBytes = byteLen(JSON.stringify(Array.from(map.entries())));
+        if (estBytes > TOTAL_BUDGET) {
+          console.warn('[FMKBlind.store] importMany: 가져오기 후 예상 용량(' + estBytes +
+            'B)이 sync 한도(' + TOTAL_BUDGET + 'B)를 초과할 수 있습니다 — 일부 항목이 저장되지 않을 수 있습니다(best-effort).');
+        }
+      } catch (e) { /* 추정 실패는 무시(쓰기는 그대로 진행) */ }
+
+      // 메모리는 위에서 동기 반영 완료 → flushPending()으로 변경분을 1회 직렬 persist.
+      // 반환 Promise resolve = sync 쓰기 완료(C3 준용). 항목별 block()처럼 여러 번 쓰지 않는다.
+      return flushPending().then(function () { return result; });
     }
   };
 

@@ -5,11 +5,20 @@
  * 차단 목록 접근은 반드시 store API(window.FMKBlind.store)만 사용한다.
  * (직접 chrome.storage 접근 금지 — storage-engineer 계약 .claude/workspace/store-api-contract.md 준수)
  *
- * 사용하는 store API (v1 FROZEN — 6 시그니처):
+ * 사용하는 store API (v1 FROZEN — 6 시그니처 + 가산 선택 API):
  *   await store.load()            // 팝업 열릴 때 1회
- *   store.list()  -> [{uid, nick, addedAt}]  // addedAt desc, 복사본
+ *   store.list()  -> [{uid, nick, addedAt}]  // addedAt desc, 복사본 (내보내기 직렬화에도 사용)
  *   store.count() -> number
  *   await store.unblock(uid)      // uid는 문자열, no-op 안전
+ *   store.onChange(cb) -> unsub   // (선택) 외부 변경 라이브 재렌더 — C9
+ *   await store.importMany(items) -> {added,skipped,invalid}  // (선택) 배치 가져오기 — C10
+ *
+ * 내보내기/가져오기(2026-07-08, TODO Q7): 내보내기는 새 API 불필요 — list() 복사본을
+ *   JSON으로 직렬화해 Blob 다운로드(권한 추가 없음). 가져오기는 파일을 파싱해 importMany로
+ *   1회 배치 반영(항목별 block 금지 — 레이트리밋). importMany는 throw하지 않고
+ *   {added,skipped,invalid}를 반환하며 반환 Promise resolve = sync 영속 완료(C10).
+ *   가져오기는 '자기-쓰기'라 onChange 에코가 없으므로(계약 C9) 콜백에 의존하지 않고
+ *   명시적으로 refresh()를 호출해 목록·인원수를 갱신한다.
  *
  * 영속화 보장(계약 C3, 2026-06-15 갱신): store.unblock/block은 sync 쓰기가 완료된 뒤
  *   resolve한다. 따라서 unblock을 await(또는 .then 체이닝)한 시점엔 이미 sync 영속이 끝나 있어,
@@ -29,6 +38,10 @@
   // 60ms는 체감 즉시성(키입력 후 1프레임 남짓)과 렌더 부하의 절충값.
   var SEARCH_DEBOUNCE_MS = 60;
 
+  // 내보내기 파일 포맷(팀 합의). 가져오기는 이 포맷의 entries 배열과 bare 배열을 관용 수용한다.
+  var EXPORT_SCHEMA = 'fmk-blind/blocklist';
+  var EXPORT_VER = 1;
+
   var store = window.FMKBlind && window.FMKBlind.store;
 
   var els = {
@@ -36,6 +49,10 @@
     search: document.getElementById('fmkb-search'),
     list: document.getElementById('fmkb-list'),
     state: document.getElementById('fmkb-state'),
+    exportBtn: document.getElementById('fmkb-export'),
+    importBtn: document.getElementById('fmkb-import'),
+    importFile: document.getElementById('fmkb-import-file'),
+    ioStatus: document.getElementById('fmkb-io-status'),
   };
 
   // store.list() 스냅샷 캐시. 검색은 이 캐시 위에서만 필터(매 입력마다 store 재호출 안 함).
@@ -124,6 +141,9 @@
   function showFatal() {
     if (els.count) els.count.textContent = '총 –명';
     if (els.list) els.list.textContent = '';
+    // store 접근 불가 상태에서는 내보내기/가져오기도 동작 불가 → 버튼 비활성으로 오조작 방지.
+    if (els.exportBtn) els.exportBtn.disabled = true;
+    if (els.importBtn) els.importBtn.disabled = true;
     setState(
       'error',
       '⚠️',
@@ -242,6 +262,194 @@
       });
   }
 
+  // ── 내보내기 / 가져오기(TODO Q7) ───────────────────────
+
+  /**
+   * 내보내기/가져오기 상태 메시지. 외부(파일) 문자열은 신뢰 불가 → textContent로만 채운다.
+   * @param {?string} kind  'success' | 'error' | null(중립/진행)
+   * @param {string}  text  빈 문자열이면 영역 숨김
+   */
+  function setIoStatus(kind, text) {
+    if (!els.ioStatus) return;
+    if (!text) {
+      els.ioStatus.hidden = true;
+      els.ioStatus.textContent = '';
+      els.ioStatus.removeAttribute('data-kind');
+      return;
+    }
+    els.ioStatus.hidden = false;
+    if (kind) els.ioStatus.setAttribute('data-kind', kind);
+    else els.ioStatus.removeAttribute('data-kind');
+    els.ioStatus.textContent = text; // ← innerHTML 금지(XSS 방지)
+  }
+
+  function pad2(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  // 파일명용 로컬 날짜 스탬프(YYYY-MM-DD).
+  function todayStamp() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  /**
+   * 내보내기: list() 스냅샷을 팀 합의 포맷 JSON으로 직렬화 → Blob 다운로드.
+   * URL.createObjectURL + a[download] 방식이라 추가 권한이 필요 없다. 사용 후 revoke.
+   * 0명이어도 동작(빈 entries) — 상태 메시지로 알림.
+   */
+  function onExport() {
+    var items;
+    try {
+      items = store.list();
+    } catch (e) {
+      console.error('[FMK-Blind popup] export: store.list 실패', e);
+      setIoStatus('error', '내보내기에 실패했습니다 — 목록을 읽지 못했습니다.');
+      return;
+    }
+    if (!Array.isArray(items)) items = [];
+
+    var entries = items.map(function (it) {
+      return {
+        uid: String(it.uid),
+        nick: it.nick == null ? '' : String(it.nick),
+        addedAt:
+          typeof it.addedAt === 'number' && isFinite(it.addedAt) ? it.addedAt : null,
+      };
+    });
+
+    var payload = {
+      schema: EXPORT_SCHEMA,
+      ver: EXPORT_VER,
+      exportedAt: new Date().toISOString(),
+      count: entries.length,
+      entries: entries,
+    };
+
+    var url;
+    try {
+      var blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: 'application/json',
+      });
+      url = URL.createObjectURL(blob);
+    } catch (e) {
+      console.error('[FMK-Blind popup] export: Blob 생성 실패', e);
+      setIoStatus('error', '내보내기에 실패했습니다.');
+      return;
+    }
+
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'fmk-blind-blocklist-' + todayStamp() + '.json';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+
+    // 다운로드 시작 뒤 정리. 즉시 revoke하면 일부 환경에서 다운로드가 취소될 수 있어 다음 태스크로 미룬다.
+    setTimeout(function () {
+      if (a.parentNode) a.parentNode.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 0);
+
+    setIoStatus(
+      'success',
+      entries.length === 0
+        ? '빈 목록을 내보냈습니다 (0명).'
+        : entries.length + '명을 파일로 내보냈습니다.'
+    );
+  }
+
+  /**
+   * 파싱된 JSON에서 항목 배열을 관용 추출.
+   *   - bare 배열                → 그대로
+   *   - { entries: [...] }        → entries (내보내기 포맷)
+   *   - { items: [...] }          → items (store 계약 §4 예시 호환)
+   *   - 그 외                     → null (형식 불일치)
+   */
+  function extractEntries(parsed) {
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object') {
+      if (Array.isArray(parsed.entries)) return parsed.entries;
+      if (Array.isArray(parsed.items)) return parsed.items;
+    }
+    return null;
+  }
+
+  // "3명 추가 · 2명 중복 · 1건 무시" 형태. added는 항상, 나머지는 있을 때만.
+  function formatImportResult(added, skipped, invalid) {
+    var parts = [added + '명 추가'];
+    if (skipped) parts.push(skipped + '명 중복');
+    if (invalid) parts.push(invalid + '건 무시');
+    return parts.join(' · ');
+  }
+
+  function setIoBusy(busy) {
+    if (els.exportBtn) els.exportBtn.disabled = busy;
+    if (els.importBtn) els.importBtn.disabled = busy;
+  }
+
+  /**
+   * 가져오기: 파일 → text() → JSON.parse → entries 추출 → importMany → 결과 표시 + 재렌더.
+   * JSON.parse/파일 읽기 실패는 상태 메시지로만 알리고 throw하지 않는다.
+   * importMany는 비정상 항목을 invalid로 집계하며 throw하지 않는다(계약 C10).
+   */
+  function onImportFileChosen(ev) {
+    var input = ev.target;
+    var file = input && input.files && input.files[0];
+    // 같은 파일을 다시 선택해도 change가 다시 발화하도록 즉시 초기화(file 참조는 이미 확보).
+    input.value = '';
+    if (!file) return;
+
+    if (typeof store.importMany !== 'function') {
+      setIoStatus('error', '이 버전은 가져오기를 지원하지 않습니다.');
+      return;
+    }
+
+    setIoStatus(null, '가져오는 중…');
+
+    file
+      .text()
+      .then(function (text) {
+        var parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch (e) {
+          setIoStatus('error', '가져오기 실패 — 올바른 JSON 파일이 아닙니다.');
+          return;
+        }
+
+        var entries = extractEntries(parsed);
+        if (entries === null) {
+          setIoStatus('error', '가져오기 실패 — 차단 목록 형식이 아닙니다.');
+          return;
+        }
+
+        setIoBusy(true);
+        return Promise.resolve(store.importMany(entries))
+          .then(function (r) {
+            r = r || {};
+            var added = r.added || 0;
+            var skipped = r.skipped || 0;
+            var invalid = r.invalid || 0;
+            // 자기-쓰기는 onChange 에코가 없으므로(계약 C9) 콜백에 의존하지 않고 직접 재렌더.
+            refresh();
+            setIoStatus('success', formatImportResult(added, skipped, invalid));
+          })
+          .catch(function (e) {
+            console.error('[FMK-Blind popup] importMany 실패', e);
+            setIoStatus('error', '가져오기 중 오류가 발생했습니다.');
+          })
+          .then(function () {
+            setIoBusy(false);
+          });
+      })
+      .catch(function (e) {
+        console.error('[FMK-Blind popup] 파일 읽기 실패', e);
+        setIoStatus('error', '파일을 읽지 못했습니다.');
+        setIoBusy(false);
+      });
+  }
+
   // ── 데이터 새로고침(store → 캐시 → 렌더) ───────────────
 
   function refresh() {
@@ -279,6 +487,15 @@
         render();
       }, SEARCH_DEBOUNCE_MS)
     );
+
+    // 내보내기/가져오기(TODO Q7). 가져오기 버튼은 숨긴 파일 입력을 트리거한다.
+    if (els.exportBtn) els.exportBtn.addEventListener('click', onExport);
+    if (els.importBtn && els.importFile) {
+      els.importBtn.addEventListener('click', function () {
+        els.importFile.click();
+      });
+      els.importFile.addEventListener('change', onImportFileChosen);
+    }
 
     // load()는 계약상 실패해도 throw 안 함(C7) — 방어적으로 catch 후 빈/부분 목록 진행.
     var loaded = typeof store.load === 'function' ? store.load() : Promise.resolve();

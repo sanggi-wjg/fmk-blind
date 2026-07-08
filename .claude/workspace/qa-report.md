@@ -493,3 +493,53 @@ popup `onUnblock`(popup.js:230) = `Promise.resolve(store.unblock(String(it.uid))
 - [ ] 우클릭 차단 직후, 같은 유저의 **이후 삽입** 노드도 숨김되는가(삽입 시점 최신 isBlocked 참조 확인).
 - [ ] 콘솔 에러/무한루프 없이 동작, 페이지 스크롤/입력에 체감 jank 없는가(OBS-1).
 - [ ] 우클릭 메뉴/토스트 자체가 관찰자에 의해 오작동하지 않는가(isOwnUiNode 스킵 실동작).
+
+---
+
+## 재검증 — 내보내기/가져오기(TODO Q7, `importMany` C10) — 2026-07-08 · 브랜치 `feat/export-import` — **PASS**
+
+**범위:** `git diff main` — `src/content/10-store.js`(가산 8번째 API `importMany`), `src/popup/popup.{html,js,css}`(내보내기/가져오기 UI), 계약 §2/C10/§4, 문서(TODO/PLAN/README/DEPLOY), `manifest.json` ver 0.5.0. content script 파일 무변경.
+**방법론:** extension-qa-verification(경계면 교차 비교 + 독립 Node 하네스). **결과: blocker/major 0건. 독립 하네스 38/38 PASS.**
+
+### 1. 경계면 계약 교차 비교 — PASS
+- **popup.js ↔ 10-store.js `importMany`**: popup(`onImportFileChosen`, popup.js:428-437)이 `store.importMany(entries)`를 호출하고 반환을 `Promise.resolve(...).then(r => { r.added/skipped/invalid })`로 소비. store 구현(10-store.js:623-667)은 `{added,skipped,invalid}` 객체를 resolve. **shape 일치.** ✔
+- **관용 추출(계약 §4) ↔ popup `extractEntries`**(popup.js:369-376): bare 배열 / `{entries}` / `{items}` 수용, 그 외 `null`. 계약 §4 예시(entries·bare·items 관용 수용)와 정확히 일치. ✔
+- **6+1 API FROZEN 불변**: 10-store.js diff는 헤더 주석 + `importMany` **추가만**(load/isBlocked/block/unblock/list/count/onChange 본문 무변경). content 소비자(99-main.js: load·isBlocked·block·unblock·onChange만 사용, 35/30/40은 store 비의존)에 영향 0. `grep`로 확인. ✔
+- **새 쓰기 경로 없음**: `importMany`는 line 666에서 `flushPending()` 호출 — block(537)·unblock(549)과 **동일 경로**. 별도 syncSet 없음(계약 C10 "기존 flushPending()/persist 경로 재사용" 준수). ✔
+
+### 2. export↔import 왕복(라운드트립) — PASS (하네스 T6·T7)
+- 소스 store에 alice/빈닉/특수문자(`한글 & <b>`) 3건 → popup 포맷 payload(`schema/ver/exportedAt/count/entries`) 직렬화 → `JSON.parse` → `extractEntries` → **새 store**에 `importMany` → `list()` 대조: **uid/nick/addedAt 무손실**. ✔
+- 빈 목록 export → `count:0, entries:[]`. 혼합 파일(중복1+신규1+junk2) import → `{added:1,skipped:1,invalid:2}`, 기존 uid nick **미덮어씀**. ✔
+
+### 3. importMany 로직 독립 재검증 — PASS (하네스 38/38, storage-engineer 35/35와 별개 mock)
+`src/content/10-store.js`를 **실제로** `vm`에 로드(테스트별 신규 클로저 + 신규 chrome mock)해 검증:
+- **T1 머지 시맨틱**: 신규 추가/기존 스킵(nick·addedAt 미덮어씀)/invalid(비객체·uid결측·비숫자열·빈문자열) 집계 정확 `{added:2,skipped:1,invalid:5}`. ✔
+- **T2/T3 단일 flush**: 20건·60건(다중 청크) import 모두 **syncSet 정확히 1회**(항목별 아님). T3은 실제로 청크 2개+ 생성 확인. ✔
+- **T4 added=0 no-op**: 빈배열/비배열(null·객체)/전량invalid/전량중복 → **syncSet 0회**·즉시 resolve. ✔
+- **T5 C3 준용**: async storage에서 반환 Promise는 **디스크 쓰기 완료 후에만** resolve(메모리는 동기 반영, await 전 디스크 미기록 → await 후 기록·bl_meta 존재). ✔
+- **T8 C9 reconcile 보존**: import 미영속 항목이 외부 onChanged(다른 컨텍스트가 uid 추가) 끼어듦에도 **유실 없음**(A·import·external 3자 모두 생존). self-echo onChanged는 빈 delta no-op. ✔
+- **T9 addedAt 정규화**: 비숫자/≤0/null → 현재시각, 숫자문자열 `'1700000000000'` → 강제(Number). ✔
+
+### 4. manifest·구조 정합 — PASS
+- `version: "0.5.0"` ✔. `permissions: ["storage"]` 불변(내보내기는 Blob+`a[download]` — 추가 권한 불필요) ✔. `content_scripts.js` 목록 불변(팝업 파일은 manifest 무관) ✔.
+- popup.html:59 `<script src="../content/10-store.js">` → `src/content/10-store.js` 실재(파일 확인). 로드 순서(store→popup.js) 유지. ✔
+- 버튼/입력 id 배선 일치: html `fmkb-export`/`fmkb-import`/`fmkb-import-file`/`fmkb-io-status` ↔ popup.js `els.*` 참조 4개 전부 일치. ✔
+
+### 5. 팝업 DOM/XSS — PASS
+- 가져온 외부 문자열(nick 등)이 DOM에 닿는 경로 전수: `setIoStatus`(popup.js:283 `textContent`), 목록 렌더 `appendHighlighted`(createTextNode/textContent만), `nick.title`·`aria-label`은 property/`setAttribute`(파싱 컨텍스트 아님). **`innerHTML`/`insertAdjacentHTML`/`document.write`/`eval` 0건**(grep — 유일 매치는 "innerHTML 금지" 주석). ✔
+- 결과 요약은 숫자만(`formatImportResult`). ✔
+- **파일 입력·버스트 처리**: `input.value=''`로 동일 파일 재선택 가능(file 참조 선확보). import 중 `setIoBusy(true)`→완료 `.then`에서 `false`, 파일읽기 실패 outer `.catch`에서도 `false`(멱등). JSON.parse/형식오류는 busy 진입 전 조기 return(버튼 잠금 안 함). `showFatal`은 store 부재 시 두 버튼 비활성. ✔
+
+### 6. 문서 정합 — PASS
+- 계약(§2 시그니처·C10 표·§4 관용예시·로드맵 "구현됨(2026-07-08)"), TODO(Q7 `[x]`), PLAN(Q7), README(사용법·크로스브라우저·머지 시맨틱 "N명 추가·M명 중복·K건 무시"), DEPLOY(v0.5.0+ 경로) **모두 코드 동작과 일치**. README 요약 문구는 대표 예시(코드는 skipped/invalid 0이면 생략) — 결함 아님. ✔
+
+### 미검증(통과 처리 금지) · 실브라우저 게이트
+mock 한계(이 프로젝트 mock 거짓 PASS 전례: resurrection 버그): 아래는 mock 재현 불가 →
+- **[ ] 실 파일 다운로드**: popup에서 `a.click()` Blob 다운로드가 실 Chrome/Firefox 팝업 컨텍스트에서 파일 저장되는가(팝업이 닫히지 않는가, `revokeObjectURL` setTimeout(0) 지연으로 취소 안 되는가).
+- **[ ] 실 파일 업로드**: `<input type=file>` 선택 → `file.text()` 파싱 → import → 목록 즉시 갱신 확인. 동일 파일 재선택 시 change 재발화 확인.
+- **[ ] 실 Chrome sync 다중 컨텍스트**: 대량 import 후 다른 열린 탭이 새로고침 없이 반영(C9), 레이트리밋(분당 120) 미초과(단일 flush이므로 이론상 안전) 실측.
+- **[ ] 왕복 실전**: Chrome에서 내보내기 → Firefox에서 가져오기(또는 역방향) 목록 이관.
+- **[ ] 용량 임박**: 수천 명 목록 import 시 100KB 근접 경고·부분저장 동작(best-effort 경고는 차단 안 함).
+
+### 결론
+**PASS.** 이번 변경은 6+1 API FROZEN을 유지하는 가산적·비파괴 확장이며, 내보내기는 신규 API/권한 없이 `list()` 직렬화로, 가져오기는 기존 flush 경로를 재사용하는 `importMany`로 구현됐다. 경계면 계약·라운드트립·머지 시맨틱·단일 flush·XSS 안전성·문서 정합 모두 확인. blocker/major 0건. 남은 것은 실 파일 I/O·실 Chrome sync의 실브라우저 게이트(위 체크리스트) — 이 프로젝트 원칙상 머지 전 사용자 실브라우저 확인 필요.

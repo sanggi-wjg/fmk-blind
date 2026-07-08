@@ -208,3 +208,58 @@ body {
   border-radius: 2px;
   padding: 0 1px;
 }
+
+/* ── 내보내기/가져오기 푸터 ── */
+.fmkb-footer {
+  flex: none; /* 목록만 스크롤되고 푸터는 하단 고정 */
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--fmkb-border);
+  background: var(--fmkb-bg);
+}
+
+.fmkb-io-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.fmkb-io-btn {
+  flex: 1 1 0;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fmkb-accent);
+  background: transparent;
+  border: 1px solid var(--fmkb-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.fmkb-io-btn:hover {
+  background: var(--fmkb-hover);
+  border-color: var(--fmkb-accent);
+}
+
+.fmkb-io-btn:active {
+  background: var(--fmkb-hover);
+}
+
+.fmkb-io-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fmkb-io-status {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fmkb-muted);
+}
+
+.fmkb-io-status[data-kind="success"] {
+  color: var(--fmkb-accent);
+}
+
+.fmkb-io-status[data-kind="error"] {
+  color: var(--fmkb-danger);
+}

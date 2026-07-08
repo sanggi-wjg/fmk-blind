@@ -105,7 +105,7 @@ npx web-ext sign --channel=unlisted|listed --api-key=… --api-secret=…  # AMO
 | Firefox `storage.sync` | Firefox 계정(로그인 + 동기화 켜짐) | Firefox 기기 간 |
 
 - **Chrome ↔ Firefox 간에는 목록이 공유되지 않는다**(저장소가 완전히 분리). 동시 사용은 가능하나 각 브라우저가 자기 목록을 따로 관리한다.
-- 두 브라우저 목록 이전/병합은 **내보내기/가져오기**(후속 과제 — [`TODO.md`](TODO.md)) 필요.
+- 두 브라우저 목록 이전/병합은 팝업의 **내보내기/가져오기**(v0.5.0+)로 가능 — 한쪽에서 JSON 내보내기 → 다른 쪽에서 가져오기(신규만 추가·기존 유지). 사용법은 [`README.md`](README.md) 참고.
 
 ---
 
