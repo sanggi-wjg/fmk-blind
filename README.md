@@ -39,7 +39,7 @@
 ## 참고·한계
 
 - **PC 전용**(`www.fmkorea.com`). 모바일(`m.fmkorea.com`)은 미지원.
-- 페이지 로드 시점에 1회 스캔해 숨긴다. **AJAX·무한스크롤로 새로 불러온 글**은 새로고침 시 반영된다(증분 처리 `MutationObserver`는 후속 과제 — `TODO.md` 참고).
+- 페이지 로드 시점에 1회 스캔해 숨기고, 이후 **AJAX·무한스크롤·더보기로 새로 불러온 글·댓글**도 `MutationObserver` 증분 처리로 새로고침 없이 즉시 숨긴다.
 - **여러 컴퓨터에서 사용**: 확장 자체(코드)는 기기마다 따로 로드해야 한다(압축해제/임시 로드 확장은 코드가 동기화되지 않음). 단 확장 ID가 고정돼 있어(Chrome=manifest `key` → `mnnofigckdchafggopgbjanmjmcbjppc`, Firefox=`browser_specific_settings.gecko.id` → `raynor-back@proton.me`) 어느 기기에서나 ID가 동일하므로, **차단 목록은 같은 계정 + 브라우저 동기화면 자동으로 기기 간 공유**된다(`chrome.storage.sync`). 단 위처럼 Chrome↔Firefox 간에는 공유되지 않는다.
 
 ## 라이선스

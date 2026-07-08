@@ -426,3 +426,70 @@ popup `onUnblock`(popup.js:230) = `Promise.resolve(store.unblock(String(it.uid))
 - **다중 컨텍스트 라이브 전파(탭↔팝업↔다른 기기)**: onChanged 실제 발화·전파 타이밍, 자기-쓰기 에코의 실 Chrome 빈-diff 성립, 외부 변경의 새로고침-없는 DOM 반영 — **전부 실브라우저 콘솔 검증 필요.** Node mock은 실 Chrome 직렬화·다중 컨텍스트를 재현 못 해 과거 resurrection 버그에 거짓 PASS를 준 전례 있음(CLAUDE.md/MEMORY). **정적·경계면만 PASS이며, 라이브 동기 "정상"은 단정하지 않음.**
 
 > **재검증 #3 판정: 정적·경계면 PASS, blocker/major/minor 0건.** onChange는 가산적·비파괴로 6 API FROZEN 무회귀, content/popup 소비가 시그니처 일치, hide 함수 재사용 정합, 리스너 컨텍스트당 1회·존재 가드 안전, 에코/피드백 루프 구조적 부재. **단, 다중 컨텍스트 onChanged 전파·에코 무해성·새로고침-없는 반영은 실브라우저 검증 필요(미검증).**
+
+---
+
+## 재검증 #4 — MutationObserver 증분 처리(TODO Q6) (2026-07-08, branch `feat/mutation-observer-incremental`)
+
+- 담당: extension-qa · 방법론: `extension-qa-verification`(경계면 교차 비교 + Node 하네스 + 라이브 셀렉터)
+- 변경 범위(`git diff main`): 신규 `src/content/35-observer.js`(untracked, 84행), `src/content/99-main.js` 배선(+7행), `manifest.json`(js 목록에 35-observer 추가, ver `0.3.0`→`0.4.0`), 문서(PLAN/README/TODO).
+- **store.js·store-api-contract.md diff 0(불변 확인) — 저장 계약 미변경.** `git diff main -- src/content/10-store.js .claude/workspace/store-api-contract.md` = 빈 출력.
+
+### 판정 요약
+
+| 검증 영역 | 상태 |
+|----------|------|
+| 1. 경계면 계약(35-observer 소비 API ↔ 00/20/30 정의, 99-main 배선) | ✅ **PASS** |
+| 2. manifest 정합성(파일 실존·로드 순서·ver 0.4.0) | ✅ **PASS** |
+| 3. 로직 검증(Node 하네스 A 격리 17 + B 통합 11 = 28 assert) | ✅ **PASS** |
+| 4. 엣지 케이스(body 폴백/스캔-관찰 경계/컨테이너·앵커 혼재) | ✅ **PASS** |
+| 5. 라이브 셀렉터(오늘자 fmkorea HTML) | ✅ **PASS** |
+| 6. 실 Chrome MutationObserver 타이밍·AJAX 실사이트 동작 | ⚠️ **미검증(실브라우저 게이트)** |
+
+> **재검증 #4 판정: 정적·경계면·Node 하네스 PASS, blocker/major/minor 0건.** 관찰: OBS-1(성능, 실브라우저 확인 권장). **실 Chrome 관찰자 타이밍·AJAX 삽입 실동작은 미검증 — 아래 실브라우저 체크리스트 필수.**
+
+### 1. 경계면 계약 — PASS (양쪽 파일 대조)
+35-observer가 소비하는 심볼을 정의처와 1:1 대조(모두 존재·시그니처 일치):
+- `NS.AUTHOR_ANCHOR_SELECTOR`(35:36,42 소비) ↔ 00-namespace.js:18 정의 `'a[class*="member_"]'`. ✔
+- `NS.MENU_ID`/`NS.TOAST_ID`(35:16 소비) ↔ 00-namespace.js:23,24 정의(`'fmkb-context-menu'`/`'fmkb-toast'`). ✔ 실 삽입부(40-contextmenu.js:21,42·50-toast.js:20,22)가 **최상위 노드로 body에 append** → 35의 top-level `isOwnUiNode` 체크와 정합(래핑 없음). ✔
+- `NS.selectors.extractUid(anchor)`(35:22 소비) ↔ 20-selectors.js:20 정의(인자=anchor, 반환=uid문자열|null). ✔
+- `NS.hide.hideForAnchor(anchor, uid)`(35:25 소비) ↔ 30-hide.js:12 정의(인자=(anchor,uid), 반환=bool). ✔
+- **99-main 배선 일치**: 99-main.js:33 `NS.observer.install({ isBlocked: (uid)=>store.isBlocked(uid) })` ↔ 35-observer.js:53 `install(handlers)`가 `handlers.isBlocked`를 함수로 소비(55). shape 일치. ✔ `store.isBlocked`는 기존 6 API(계약 불변)로 재사용 — 신규 store 표면 0.
+
+### 2. manifest 정합성 — PASS
+- js 배열 8개 파일 전부 실존(`for f in ...; test -f`로 확인): 00·10·20·30·**35**·40·50·99. ✔
+- 로드 순서 `00→10→20→30→35→40→50→99`: 35는 20(NS.selectors)·30(NS.hide) **이후**, 00(상수) 이후. ✔ 단, 35 IIFE 본문은 로드 시점에 `NS`만 참조(라인 8-9)하고 selectors/hide/상수는 전부 **콜백 실행 시점**에 참조 → 로드 순서 위반해도 즉시 깨지진 않으나, 현 순서가 의존성과 정합해 안전. ✔
+- `manifest_version:3`, `permissions:["storage"]`(host_permissions/scripting/tabs 없음), `matches:["https://www.fmkorea.com/*"]`, `default_popup:src/popup/popup.html`(실존), `version:"0.4.0"`. ✔ MutationObserver는 **추가 권한 불요**(표준 DOM API) — 최소권한 유지. ✔
+
+### 3. 로직 검증(Node 하네스) — PASS (28/28)
+`vm`로 실제 파일을 로드해 구동. 산출물: 하단 아티팩트.
+- **하네스 A(35 격리, stub NS)** 17/17: install→관찰옵션 `{childList:true,subtree:true}`만(attributes/characterData 미관찰=재귀가드) · (a)자기앵커 차단→hideForAnchor · (b)하위앵커 순회(차단2/비차단1 정확) · (c)비Element·메뉴·토스트 스킵 · (d)중복 install no-op(생성자 1회) · (e)isBlocked=false 미숨김 · (f)UID없음 스킵 · (g)isBlocked 미주입·(i)타깃 부재 안전미설치 · (h)body부재→documentElement 폴백 · (j)컨테이너+후행 형제앵커 동시 처리 · (k)disconnect후 재install · (l)자기앵커+하위앵커 동시.
+- **하네스 B(00/20/30/35 통합, fake DOM)** 11/11: 실 `extractUid`+`hideForAnchor`+`findContainer(closest)` 재사용 경로로 — AJAX 삽입 `li[id=comment_777] > a.member_123456` 차단 컨테이너 숨김·`data-fmkb-uid` 표식 · 비차단 댓글 미숨김 · 보드목록 `<tr>` 행 `closest('tr,li')` 숨김 · `member_plate`(비숫자 토큰) 미숨김(토큰-앵커드) · 회귀: `hide.scan`/`unhideByUid` 정상.
+
+### 4. 엣지 케이스 — PASS
+- **body 부재 폴백**: 35:58 `document.body || document.documentElement`, 59 둘 다 없으면 안전 미설치. 하네스 A(h)(i)로 확인. document_end 실행이라 통상 body 존재. ✔
+- **스캔↔관찰 경계 명확**: 99-main 흐름 = ①`hide.scan`(27, 관찰 전 존재 노드 책임) → ②`observer.install`(33, 이후 삽입 노드 책임). **두 단계 사이 await 없음(동기)** → 스캔·설치 틈에 DOM 삽입 불가 → 누락 경계 없음(TOCTOU 부재). 35 헤더 주석(3-4행)·99-main 주석(29-31)이 "최초 스캔 이후 삽입 노드"로 책임 분리 명시. ✔
+- **컨테이너 단위 삽입(앵커가 컨테이너보다 나중/함께)**: `handleAddedNode`가 addedNodes를 인덱스 순회, 각 노드에 (a)자신 매칭+(b)하위 querySelectorAll 둘 다 수행 → 순서 무관 처리. 하네스 A(j)(l)로 확인. ✔
+- **재귀 가드**: 숨김은 class·dataset 토글(=attribute 변경)인데 관찰은 childList만 → 자기 트리거 무한루프 부재(35:49-51 주석 + 하네스 A 관찰옵션 assert). ✔
+
+### 5. 라이브 셀렉터 재검증 — PASS (오늘자 fmkorea, 2026-07-08)
+`curl`로 실 HTML 수신(UA=Chrome/120). 증분 삽입 노드도 동일 마크업을 지님을 전제하므로 최초 스캔과 같은 셀렉터 유효성 확인:
+- 목록(`mid=humor`, http 200, 76KB): `member_[0-9]+` 앵커 **고유 20개** → `a[class*="member_"]` 유효, `member_(\d+)` UID 추출 유효(9~11자리 가변 길이도 `\d+`로 흡수). ✔
+- 게시글(`/1598251840`, http 200, 155KB): `id="comment_[0-9]+"` 댓글 li **21개**(+`comment_best` 존재) → `li[id^="comment_"]`·베스트댓글 유효. `.rd`(`class="rd rd_nav_style2 clear"`)·`.rd_hd`·`.top_area` 존재 → 게시글 컨테이너 판정 유효. ✔
+
+### 발견/관찰 사항
+- **[OBS-1] (minor·성능, 실브라우저 확인 권장)** `observe(target, {childList:true, subtree:true})`가 document 전역이라 **모든 하위 노드 삽입**(광고/트래킹/스크립트 포함)마다 콜백이 돌고, 각 addedNode 서브트리에 `querySelectorAll('a[class*="member_"]')`를 수행한다. 디바운스/throttle·requestIdleCallback 없음. fmkorea 정도 트래픽에선 통상 무해하나, 광고 삽입이 잦은 페이지에서의 CPU/jank는 **정적으로 단정 불가 → 실브라우저에서 프로파일 관찰 권장**. 기능 정확성 결함 아님(=minor 관찰).
+- blocker/major 결함 **0건**. 신규 store 표면 0(계약 불변), 신규 권한 0(표준 DOM API).
+
+### 미검증(통과 처리 금지 — 명시) · 실브라우저 게이트
+이 프로젝트는 **Node mock 거짓 PASS 전례**(resurrection 버그, MEMORY/CLAUDE.md)가 있다. 아래는 mock으로 재현 불가:
+1. **실 Chrome MutationObserver 발화 타이밍/배치**: 여러 삽입이 마이크로태스크로 배치돼 한 records[]로 오는 경우의 실제 처리(하네스는 콜백을 직접 호출해 흉내만 냄).
+2. **fmkorea AJAX 실동작**: 댓글 작성/더보기/무한스크롤 시 실제 DOM 삽입이 `addedNodes`로 오는지(vs innerHTML 치환/문서프래그먼트) — 실사이트에서만 확정. 정적 커버(하네스 B에서 컨테이너/앵커 양형태 처리)로 논리적 대비는 됐으나 실동작 미확인.
+3. **성능(OBS-1)**: 광고 잦은 실페이지에서 관찰자 콜백 부하/jank.
+
+**실브라우저 체크리스트(머지 전 게이트):**
+- [ ] 차단 유저가 쓴 댓글이 있는 게시글에서 "더보기/새 댓글" AJAX 로드 시 새 댓글이 **즉시 숨김**되는가(새로고침 없이).
+- [ ] 무한스크롤/페이지네이션 AJAX로 목록 행 추가 시 차단 유저 행이 즉시 숨김되는가.
+- [ ] 우클릭 차단 직후, 같은 유저의 **이후 삽입** 노드도 숨김되는가(삽입 시점 최신 isBlocked 참조 확인).
+- [ ] 콘솔 에러/무한루프 없이 동작, 페이지 스크롤/입력에 체감 jank 없는가(OBS-1).
+- [ ] 우클릭 메뉴/토스트 자체가 관찰자에 의해 오작동하지 않는가(isOwnUiNode 스킵 실동작).

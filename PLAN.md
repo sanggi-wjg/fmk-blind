@@ -11,7 +11,7 @@
 | Q3 | 차단 트리거 | **우클릭 커스텀 컨텍스트 메뉴**(작성자 닉네임 요소 위에서만). 항목: 차단 / 차단 해제(상태 토글). 메모는 후속 |
 | Q4 | 블라인드 방식 | **완전 숨김(`display:none`)** — 목록 행 / 본문 / 댓글 모두 제거 |
 | Q5 | 저장소 | **`chrome.storage.sync` + 샤딩**(`bl_0..N`, 키당 ≤8KB, 총 ≤100KB). 메모리엔 `{uid:{nick,addedAt}}` 맵. 닉네임 메타 유지. 압축은 후속 |
-| Q6 | 재적용 시점 | **최초 로드 1회 스캔**(`DOMContentLoaded`). MutationObserver 증분 처리는 후속 |
+| Q6 | 재적용 시점 | **최초 로드 1회 스캔**(`DOMContentLoaded`) **+ MutationObserver 증분 처리**(2026-07-08). 최초 스캔 이후 AJAX/더보기/무한스크롤로 새로 삽입되는 노드도 즉시 숨김(`35-observer.js`) |
 | Q7 | 관리 UI | **툴바 팝업**: 목록(닉/UID) · 검색 · 차단 해제 · 인원수. 내보내기/가져오기는 후속 |
 | Q8 | 판정 범위 | **작성자 본인 노드만 숨김**. `member_{UID}` 앵커가 직접 든 컨테이너만 제거(베스트댓글 중복도 자동 처리). 인용/멘션은 미처리 |
 | Q9 | 피드백/가드 | 차단 시 **가벼운 토스트**. 자기 차단 가드는 후속 |
@@ -53,7 +53,8 @@
 - **빌드 없음** — content script 를 manifest 순서대로 로드, 전역 네임스페이스 `FMKBlind` 공유
 
 ### 알려진 v1 제약
-- ~~팝업에서 차단 해제/추가 시 이미 열린 탭은 새로고침 후 반영~~ → **해소(2026-06-15)**: `chrome.storage.onChanged` 라이브 동기 구현(가산적 7번째 API `onChange` + 불변식 C9, 외부 델타만 reconcile)으로 팝업/다른 탭/다른 기기 변경이 열린 탭에 **새로고침 없이 즉시 반영**된다. 우클릭 차단도 현재 탭 즉시 반영. (단 AJAX/무한스크롤로 **새로 삽입되는 DOM**의 증분 반영은 `MutationObserver` — 여전히 TODO.)
+- ~~팝업에서 차단 해제/추가 시 이미 열린 탭은 새로고침 후 반영~~ → **해소(2026-06-15)**: `chrome.storage.onChanged` 라이브 동기 구현(가산적 7번째 API `onChange` + 불변식 C9, 외부 델타만 reconcile)으로 팝업/다른 탭/다른 기기 변경이 열린 탭에 **새로고침 없이 즉시 반영**된다. 우클릭 차단도 현재 탭 즉시 반영.
+- ~~AJAX/무한스크롤로 **새로 삽입되는 DOM**은 새로고침 전까지 미반영~~ → **해소(2026-07-08)**: `MutationObserver` 증분 처리(`35-observer.js`) 구현. `document.body` 를 `childList/subtree` 로 관찰해 최초 스캔 이후 삽입되는 노드의 작성자 앵커도 삽입 시점의 최신 차단 상태로 즉시 숨긴다(숨김 실동작은 30-hide 재사용).
 
 ### 파일 구조(예정)
 ```
@@ -65,6 +66,7 @@ fmk-blind/
 │   │   ├── 10-store.js       # sync 샤딩 저장 계층 + 메모리 맵
 │   │   ├── 20-selectors.js   # UID 추출, 컨테이너 탐색 규칙
 │   │   ├── 30-hide.js        # display:none 적용(1회 스캔)
+│   │   ├── 35-observer.js    # MutationObserver 증분 처리(새로 삽입되는 노드 숨김)
 │   │   ├── 40-contextmenu.js # 우클릭 커스텀 메뉴(차단/해제)
 │   │   ├── 50-toast.js       # 토스트
 │   │   └── 99-main.js        # DOMContentLoaded 진입점
