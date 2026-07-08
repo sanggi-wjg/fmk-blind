@@ -3,7 +3,7 @@
 v1 범위에서 의도적으로 제외한 개선 항목. 우선순위 순.
 
 ## 기능 확장
-- [ ] **MutationObserver 증분 처리** (Q6) — AJAX 댓글/더보기/무한스크롤/새 댓글 삽입 시 차단 재적용. 현재는 최초 로드 1회만 처리
+- [x] **MutationObserver 증분 처리** (Q6) — 2026-07-08 완료. 최초 로드 1회 스캔(30-hide.scan) 이후 AJAX 댓글/더보기/무한스크롤/새 댓글 삽입 등으로 새로 삽입되는 노드에도 차단(숨김)을 즉시 적용(`src/content/35-observer.js`, `document.body` childList/subtree 관찰 → addedNodes 의 작성자 앵커를 30-hide.hideForAnchor 재사용으로 숨김). attributes 미관찰이라 클래스 토글 재귀 없음, 우리 UI 노드(메뉴/토스트) 스킵
 - [x] **`chrome.storage.onChanged` 새로고침 없는 반영** — 2026-06-15 완료. 팝업/다른 탭/다른 기기 변경 시 열린 탭이 즉시 숨김/복구(가산적 7번째 API `onChange` + 불변식 C9). 외부 델타만 reconcile해 로컬 미영속 항목 보존 + 잔여 엣지 I2 닫음. MutationObserver(새 DOM 증분)는 여전히 별개 TODO
 - [ ] **모바일 지원** (Q2) — `m.fmkorea.com` 별도 셀렉터 세트 + 검증. 현재 PC 전용
 - [ ] **저장 압축** (Q5) — LZ-string 등으로 목록 압축 후 샤딩 → sync 수천 명대 확보
