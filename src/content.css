@@ -64,3 +64,24 @@
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ── 터치 기기 대응(모바일 m.fmkorea.com 등) ──
+   포인터가 coarse(손가락)인 기기에서 커스텀 메뉴 아이템·토스트의 터치 타깃과 가독성을 키운다.
+   메뉴 아이템은 최소 ~44px 터치 타깃(접근성 권장치)을 확보한다:
+   15px * line-height 1.2 ≈ 18px + 상하 패딩 26px = 44px.
+   40-contextmenu.js 로직은 무변경 — 표현(터치 타깃)만 CSS로 확대한다. */
+@media (pointer: coarse) {
+  #fmkb-context-menu {
+    font-size: 15px;
+    min-width: 180px;
+  }
+
+  #fmkb-context-menu .fmkb-menu-item {
+    padding: 13px 18px;
+  }
+
+  #fmkb-toast {
+    font-size: 15px;
+    padding: 12px 20px;
+  }
+}

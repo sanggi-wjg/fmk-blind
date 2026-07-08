@@ -1,6 +1,6 @@
 # FMK-Blind
 
-에펨코리아(fmkorea, PC) 특정 유저 블라인드 크롬 확장(MV3). 설계는 `PLAN.md`, 후속 작업은 `TODO.md` 참조.
+에펨코리아(fmkorea, PC·모바일) 특정 유저 블라인드 크롬 확장(MV3). 설계는 `PLAN.md`, 후속 작업은 `TODO.md` 참조.
 
 ## 하네스: FMK-Blind 크롬 확장
 
@@ -22,3 +22,4 @@
 | 2026-06-16 | 기능 개발 워크플로 도입(브랜치→구현→PR = 1 작업 단위) | `fmk-extension-orchestrator` 스킬(**Phase 0.5** 브랜치 준비 + **Phase 6** PR 마감 추가, 인트로·트리거 설명·테스트 시나리오 동기화), CLAUDE.md 트리거/규약, `.github/workflows/release.yml`(main 머지 시 버전 기준 릴리즈 자동화), `LICENSE`(MIT) | 기능 1건 = 최신 main 브랜치 → 팀 구현·검증 → 커밋·푸시·PR 생성까지 한 단위로 통일. PR에서 정지(머지=사용자), 머지 시 release.yml이 `v{version}` 릴리즈+zip 자동 생성. 버전 범프·실브라우저 게이트·PR 템플릿·표준 trailer를 스킬에 인코딩. 사용자 결정(A안: 새 스킬/에이전트 신설 대신 기존 오케스트레이터 확장 — 진입점 단일화·드리프트 방지) |
 | 2026-06-16 | 확장 ID 고정(manifest `key`) — 기기 간 차단목록 동기화 활성화 | `manifest.json`(`key` 추가, ver 0.3.0), README 다기기 안내 보강 | 압축해제 확장 ID는 폴더 경로 기반이라 컴퓨터마다 달라져 `chrome.storage.sync` 저장소가 분리됐다. 고정 공개키 `key`로 ID를 `mnnofigckdchafggopgbjanmjmcbjppc`로 고정 → 어느 기기에 로드해도 같은 ID → 같은 구글 계정·동기화면 차단 목록 공유. ⚠️ ID 변경이라 기존(옛 경로기반 ID) sync 데이터는 이월 안 됨(새 ID에서 새로 시작). 비밀키는 unpacked+sync 용도엔 불필요(스토어 미배포). 워크플로 첫 적용(브랜치 feat/pin-extension-id → PR) |
 | 2026-06-18 | Chrome·Firefox 배포/사용 문서화(드리프트 정정, 코드 무변경) | `DEPLOY.md` 신규(배포 절차 전담), `README.md`(Firefox 설치·크로스브라우저 동시사용·목록 분리 한계 보강), `TODO.md`(스토어 배포 항목에 DEPLOY.md 연결), CLAUDE.md | manifest엔 이미 `browser_specific_settings.gecko`(Firefox용)가 있었으나 이를 설명·안내하는 문서가 0이었던 드리프트 해소. 단일 manifest가 양쪽에서 로드되는 원리(각 브라우저가 상대 전용 키 `key`/`browser_specific_settings` 무시), Firefox 3경로(임시 로드/서명 xpi 자가배포/AMO)·`web-ext`·차단목록 브라우저별 분리를 명문화. 코드 변경 없는 문서-only → 인라인 리뷰로 마감 |
+| 2026-07-08 | 모바일 지원 로드맵 3단계 완주(PR#4·#5·#6, grilling 합의 기반) | PR#4 `35-observer.js`(MutationObserver 증분 처리, Q6, v0.4.0) → PR#5 `importMany` 8번째 API+계약 C10·팝업 내보내기/가져오기(Q7, v0.5.0) → PR#6 모바일(manifest `m.fmkorea.com` 매치·`pointer:coarse` 터치 CSS·문서 정정, Q2, v0.6.0). fmk-dom-selectors 스킬에 모바일 실측 섹션, content-engineer 정의·CLAUDE.md 범위 문구 (PC·모바일) 갱신 | /grilling 인터뷰로 결정 확정(런타임=Firefox Android, 범위=본문+댓글, 배포=unlisted xpi+Beta/Nightly, 실기기 머지 게이트). **실측 정정**: 기존 "모바일 member_ 없음" 기록은 부정확 — 게시글 작성자는 PC 동일 `member_{UID} member_plate`·조상 체인도 동일(`.rd_hd`→`.rd` 규칙 그대로 매치, 셀렉터 코드 무변경). 목록은 UID 없어 범위 밖, 댓글은 JS 지연 렌더(MutationObserver가 처리, 렌더 마크업은 실기기 게이트 확정). 데스크톱 UA는 m.→www 리다이렉트(실브라우저 확인). 각 PR QA·리뷰 그린, 모바일 런타임(G1~G5)은 사용자 실기기 게이트 잔존 |

@@ -69,6 +69,21 @@ manifest의 고정 `key` 덕분에 확장 ID가 **`mnnofigckdchafggopgbjanmjmcbj
 
 > ⚠️ 제출 전 manifest의 **`key`(Chrome 전용)는 제거 권장**. Firefox는 `key`를 무시하지만 `web-ext lint`가 경고를 낸다(§4).
 
+### 2-4. Firefox for Android (모바일 `m.fmkorea.com`)
+
+모바일 크롬은 확장을 지원하지 않으므로 **Firefox for Android**로 설치한다. 확장 코드/`manifest.json`은 데스크톱과 동일(`matches`에 `m.fmkorea.com` 포함, v0.6.0+).
+
+- **Beta / Nightly — 서명 `.xpi` 파일 설치 가능**: §2-2에서 `web-ext sign --channel=unlisted`로 받은 `.xpi`를 기기에 내려받아 브라우저로 열면 설치된다(또는 파일 URL로 접근). Beta/Nightly는 `xpinstall.signatures.required` 완화가 가능해 자가 배포 xpi를 붙일 수 있다.
+- **정식 Release — AMO `listed` 필요**: Release 채널은 AMO에 `listed`로 게시·서명된 확장만 설치할 수 있다(§2-3). 개인 xpi 직접 설치는 불가.
+- **개발/디버깅 — USB `web-ext run`**: PC에 기기를 USB로 연결(개발자 옵션 + USB 디버깅)하고 Firefox(Beta/Nightly)를 깔아둔 뒤:
+  ```bash
+  npx web-ext run --target=firefox-android --android-device=<ADB_DEVICE_ID>
+  # 연결된 기기 ID 확인: adb devices  (또는 web-ext run --target=firefox-android 로 목록 표시)
+  ```
+  선택한 기기의 Firefox에 확장이 임시 로드된다(핫리로드). `about:debugging`(데스크톱)에서 원격 디버깅도 가능.
+
+> 데스크톱 UA로 `m.` 주소 접속 시 `www`로 리다이렉트되므로 `m.` 매치는 사실상 모바일 기기 전용이다. 모바일 실동작(지연 렌더 댓글·롱프레스 메뉴·팝업)은 실기기 검증 단계.
+
 ---
 
 ## 3. 도구: `web-ext` (Mozilla 공식 CLI)

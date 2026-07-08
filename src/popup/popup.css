@@ -263,3 +263,27 @@ body {
 .fmkb-io-status[data-kind="error"] {
   color: var(--fmkb-danger);
 }
+
+/* ── 모바일(터치) 최소 조정 ──
+   Firefox Android에서 팝업은 별도 화면(사실상 전체 폭)으로 열린다.
+   데스크톱 팝업(360px 고정)은 그대로 두고, 터치 환경에서만 폭을 뷰포트에
+   맞추고 높이 상한을 풀며 터치 타깃(≈44px)을 확보한다. */
+@media (pointer: coarse) {
+  body {
+    width: 100%;
+    min-width: 320px;
+    max-height: none;
+  }
+  .fmkb-search {
+    padding: 12px 12px;
+    font-size: 15px;
+  }
+  .fmkb-unblock {
+    padding: 12px 14px;
+    font-size: 14px;
+  }
+  .fmkb-io-btn {
+    padding: 12px 10px;
+    font-size: 14px;
+  }
+}

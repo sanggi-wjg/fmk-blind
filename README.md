@@ -1,7 +1,7 @@
 # FMK-Blind
 
-에펨코리아(PC, `www.fmkorea.com`) 특정 유저를 블라인드 처리하는 브라우저 확장(Manifest V3).
-차단한 작성자의 글·댓글을 완전히 숨긴다. **Chrome·Firefox 모두 지원**한다.
+에펨코리아(PC `www.fmkorea.com` + 모바일 `m.fmkorea.com`) 특정 유저를 블라인드 처리하는 브라우저 확장(Manifest V3).
+차단한 작성자의 글·댓글을 완전히 숨긴다. **Chrome·Firefox 모두 지원**하며, 모바일은 Firefox for Android로 커버한다(아래 *모바일* 참고).
 
 > 배포(스토어 등록·서명 등) 절차는 [`DEPLOY.md`](DEPLOY.md) 참고. 아래는 로컬 설치·사용 안내다.
 
@@ -39,9 +39,18 @@
 - **코드 하나로 양쪽에서 동작한다.** 무빌드 + `chrome.*` API만 사용하고, 각 브라우저가 상대 전용 manifest 키(Chrome의 `key` / Firefox의 `browser_specific_settings`)를 무시하므로 **단일 `manifest.json`이 둘 다에서 로드**된다.
 - ⚠️ **차단 목록은 브라우저별로 분리된다.** Chrome은 구글 계정, Firefox는 Firefox 계정으로 각각 동기화되며 **Chrome ↔ Firefox 사이엔 목록이 공유되지 않는다**. 두 브라우저 목록을 합치려면 팝업의 **내보내기/가져오기**(위 *사용법* 참고)로 한쪽에서 내보내 다른 쪽에 가져오면 된다.
 
-## 참고·한계
+## 모바일 (`m.fmkorea.com`)
 
-- **PC 전용**(`www.fmkorea.com`). 모바일(`m.fmkorea.com`)은 미지원.
+- **지원 범위**: 모바일 **게시글·댓글**은 PC와 동일한 작성자 앵커(`member_{UID}`)를 써서 그대로 커버된다(별도 셀렉터 없이 `m.fmkorea.com`을 매치에 추가). 모바일 **목록**은 작성자에 UID·링크가 없어 범위 밖(PC 홈/베스트 통합목록과 동일).
+- **설치(Firefox Android)**: 모바일 크롬은 확장을 지원하지 않으므로 **Firefox for Android**를 쓴다.
+  - **Beta/Nightly**: 서명된 `.xpi` 파일을 직접 설치할 수 있다(자가 배포 xpi를 브라우저에서 열기). 정식 Release는 AMO에 `listed`로 올린 확장만 설치 가능.
+  - **개발/디버깅**: PC에서 USB로 연결해 `web-ext run --target=firefox-android`로 로드. 자세한 경로는 [`DEPLOY.md`](DEPLOY.md).
+- 데스크톱 UA로 `m.` 주소에 접속하면 `www`로 리다이렉트되므로, `m.` 매치는 사실상 모바일 기기 전용이다.
+- 롱프레스로 작성자 우클릭 메뉴(차단/해제)가 뜨고, 터치 기기에서는 메뉴·토스트가 손가락 터치에 맞게 커진다.
+
+> ⚠️ 모바일 실동작(지연 렌더 댓글 숨김·롱프레스 메뉴·팝업)은 **실기기 검증 단계**에 있다. PC(`www`)는 검증 완료.
+
+## 참고·한계
 - 페이지 로드 시점에 1회 스캔해 숨기고, 이후 **AJAX·무한스크롤·더보기로 새로 불러온 글·댓글**도 `MutationObserver` 증분 처리로 새로고침 없이 즉시 숨긴다.
 - **여러 컴퓨터에서 사용**: 확장 자체(코드)는 기기마다 따로 로드해야 한다(압축해제/임시 로드 확장은 코드가 동기화되지 않음). 단 확장 ID가 고정돼 있어(Chrome=manifest `key` → `mnnofigckdchafggopgbjanmjmcbjppc`, Firefox=`browser_specific_settings.gecko.id` → `raynor-back@proton.me`) 어느 기기에서나 ID가 동일하므로, **차단 목록은 같은 계정 + 브라우저 동기화면 자동으로 기기 간 공유**된다(`chrome.storage.sync`). 단 위처럼 Chrome↔Firefox 간에는 공유되지 않는다.
 
