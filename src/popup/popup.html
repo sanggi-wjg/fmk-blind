@@ -36,6 +36,24 @@
     <div class="fmkb-state" id="fmkb-state" role="status" hidden></div>
   </main>
 
+  <!-- 내보내기/가져오기: 목록 백업·브라우저 간 이관(Chrome↔Firefox 목록 분리 해소 경로) -->
+  <footer class="fmkb-footer">
+    <div class="fmkb-io-actions">
+      <button type="button" class="fmkb-io-btn" id="fmkb-export">내보내기</button>
+      <button type="button" class="fmkb-io-btn" id="fmkb-import">가져오기</button>
+      <!-- 숨김 파일 입력: 가져오기 버튼이 트리거. 같은 파일 재선택 위해 선택 후 value 초기화 -->
+      <input
+        type="file"
+        id="fmkb-import-file"
+        class="fmkb-import-file"
+        accept=".json,application/json"
+        hidden
+      />
+    </div>
+    <!-- 내보내기/가져오기 결과·오류 안내(신뢰 불가 입력이므로 textContent로만 채움) -->
+    <div class="fmkb-io-status" id="fmkb-io-status" role="status" aria-live="polite" hidden></div>
+  </footer>
+
   <!-- 공유 저장 계층을 먼저 로드한 뒤 popup.js. -->
   <!-- 단일 출처: content script와 동일 파일(src/content/10-store.js)을 재사용(별도 사본 금지). -->
   <script src="../content/10-store.js"></script>
