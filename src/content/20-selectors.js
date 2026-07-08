@@ -1,5 +1,10 @@
 // FMK-Blind — 작성자 식별 & 숨길 컨테이너 판정
 // 단일 출처: fmk-dom-selectors 스킬. 여기 규칙은 스킬과 1:1로 일치해야 한다(임의 추정 금지).
+// 적용 범위: PC(www.fmkorea.com) + 모바일(m.fmkorea.com) 공통.
+//   모바일 게시글 작성자 앵커는 PC와 동일 패턴(member_{UID} member_plate)이고 조상 체인에
+//   .rd_hd / .rd 가 그대로 존재함을 실측 확인(2026-07-08, 모바일 UA curl: m_article.html) →
+//   아래 판정 규칙 ②가 모바일에서도 그대로 매치하므로 셀렉터 코드 변경이 필요 없다.
+//   (모바일 목록은 숫자 member_ 앵커가 없어 애초에 매치 안 됨 → 범위 밖, 오작동 위험 없음.)
 (function () {
   'use strict';
 
@@ -50,7 +55,8 @@
       const comment = anchor.closest('li[id^="comment_"]');
       if (comment) return comment;
 
-      // ② 게시글 글쓴이 → .rd
+      // ② 게시글 글쓴이 → .rd (PC·모바일 공통: 모바일 조상 체인도
+      //    a.member_* < div.side < div.btm_area < div.board < div.rd_hd < #bd_capture < div.rd)
       const head = anchor.closest('.rd_hd, .top_area');
       if (head) {
         const rd = head.closest('.rd');
