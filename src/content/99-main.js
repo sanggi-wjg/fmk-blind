@@ -23,14 +23,31 @@
       return;
     }
 
-    // 1) 최초 로드 1회 스캔 — 차단 대상 컨테이너 숨김.
-    NS.hide.scan((uid) => store.isBlocked(uid));
+    // 닉네임 → uid 색인(UID 없는 모바일 목록의 닉네임 폴백용). store.list() 의 저장 닉네임으로 구성하고
+    // 차단 목록이 바뀌면(차단/해제/onChange) null 로 무효화 → 다음 조회 때 재구성한다.
+    // 한계: 차단 후 닉네임을 바꾼 유저는 놓치고, 그 옛 닉네임을 쓰는 다른 유저는 목록에서 숨겨질 수 있다.
+    //       외부에서 닉네임만 바뀐 변경(키셋 동일)은 onChange 가 통지하지 않아 새로고침 전까지 옛 색인을 쓴다.
+    let nickIndex = null;
+    function uidForNick(nick) {
+      if (!nickIndex) {
+        nickIndex = new Map();
+        store.list().forEach((it) => {
+          const n = NS.selectors.normalizeNick(it.nick);
+          if (n && !nickIndex.has(n)) nickIndex.set(n, it.uid);
+        });
+      }
+      const uid = nickIndex.get(nick);
+      return uid && store.isBlocked(uid) ? uid : null;
+    }
+
+    // 1) 최초 로드 1회 스캔 — 차단 대상 컨테이너 숨김(+ 모바일 목록 닉네임 폴백).
+    NS.hide.scan((uid) => store.isBlocked(uid), uidForNick);
 
     // 2) 증분 처리(MutationObserver) — 최초 스캔 이후 AJAX 댓글/더보기/무한스크롤/새 댓글 삽입 등으로
     //    새로 삽입되는 노드에도 차단(숨김)을 즉시 적용. 판정은 삽입 시점의 최신 store.isBlocked 를 참조한다.
     //    여기 도달했다는 건 store.load 성공(안전 실패 경로를 통과)했다는 뜻 → observer 설치 안전.
     if (NS.observer && typeof NS.observer.install === 'function') {
-      NS.observer.install({ isBlocked: (uid) => store.isBlocked(uid) });
+      NS.observer.install({ isBlocked: (uid) => store.isBlocked(uid), uidForNick });
     }
 
     // 3) 우클릭 커스텀 메뉴 배선 — 차단/해제 동작을 store + 현재 탭 즉시 반영으로 연결.
@@ -40,26 +57,35 @@
       // 계약 C3: block resolve 직후 메모리 반영 → 그 다음 숨김 처리.
       async onBlock(uid, nick) {
         await store.block(uid, nick);
+        nickIndex = null;
         NS.hide.hideByUid(uid); // 현재 탭 즉시 숨김 반영
+        NS.hide.scanNickRows(document, uidForNick);
         NS.toast.show((nick || uid) + ' 님을 차단했습니다');
       },
 
       async onUnblock(uid, nick) {
         await store.unblock(uid);
+        nickIndex = null;
         NS.hide.unhideByUid(uid); // 현재 탭 즉시 복구
+        // 같은 닉네임의 다른 차단 uid 가 남아 있으면 방금 복구된 목록 행을 그 uid 로 다시 숨긴다.
+        NS.hide.scanNickRows(document, uidForNick);
         NS.toast.show((nick || uid) + ' 님을 차단 해제했습니다');
       },
     });
 
     // 4) 라이브 동기(C9) — 팝업/다른 탭/다른 기기의 변경을 새로고침 없이 현재 탭에 반영.
     //    store.onChange는 외부 sync 변경 시에만 diff를 통지한다(자기-쓰기 에코는 빈 diff → 미호출).
-    //    added → 현재 DOM에서 해당 작성자 컨테이너 숨김, removed → 복구. 둘 다 30-hide의 기존 함수 재사용.
+    //    removed → 복구(닉네임 폴백으로 숨긴 행도 data-fmkb-uid 를 남기므로 unhideByUid 로 함께 복구),
+    //    added → 현재 DOM에서 해당 작성자 컨테이너 숨김, 마지막에 모바일 목록 닉네임 폴백 재스캔. 30-hide 함수 재사용.
     //    범위: 이미 로드된 DOM을 즉시 반영. 이후 새로 삽입되는 DOM은 (2)의 MutationObserver 가
     //    삽입 시점의 최신 차단 상태로 처리하므로 별도 처리가 필요 없다.
     if (typeof store.onChange === 'function') {
       store.onChange((d) => {
-        d.added.forEach((uid) => NS.hide.hideByUid(uid));
+        nickIndex = null;
         d.removed.forEach((uid) => NS.hide.unhideByUid(uid));
+        d.added.forEach((uid) => NS.hide.hideByUid(uid));
+        // 복구 후 재스캔: 추가된 uid 의 목록 행 숨김 + 같은 닉의 다른 차단 uid 로 남아야 할 행 재숨김.
+        NS.hide.scanNickRows(document, uidForNick);
       });
     }
   }
