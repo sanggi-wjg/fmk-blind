@@ -176,7 +176,7 @@ try {
   // e.code: 'CONTEXT_INVALIDATED'(새로고침 안내) | 'QUOTA'(목록 정리 안내) | 'SCHEMA_NEWER'(확장 업데이트 안내) | 'WRITE_FAILED'(잠시 후 재시도)
   // store가 이미 되돌렸으므로 숨기지 않고 실패 토스트만. unblock도 동일.
 }
-// 모바일 목록 닉네임 폴백(2026-10-05, 이슈 #8 — 기존 API 재사용, 계약 무변경):
+// UID 없는 목록(모바일 목록·PC 위젯형 목록) 닉네임 폴백(2026-10-05, 이슈 #8·#16 — 기존 API 재사용, 계약 무변경):
 // list()의 nick으로 '정규화 닉 → uid' 색인을 만들고 block/unblock/onChange 때 무효화·재구성.
 FMKBlind.store.list().forEach(function (it) { /* nickIndex.set(normalizeNick(it.nick), it.uid) */ });
 
@@ -185,7 +185,7 @@ FMKBlind.store.onChange(function (d) {
   nickIndex = null;                                                    // 닉네임 색인 무효화
   d.removed.forEach(function (uid) { NS.hide.unhideByUid(uid); });
   d.added.forEach(function (uid) { NS.hide.hideByUid(uid); });
-  NS.hide.scanNickRows(document, uidForNick);                          // 모바일 목록 닉네임 폴백 재스캔
+  NS.hide.scanNickRows(document, uidForNick);                          // UID 없는 목록 닉네임 폴백 재스캔
 });
 // 주의: onChange는 **현재 DOM에만** 재적용. 이후 삽입되는 노드는 MutationObserver(35-observer, v0.4.0)가
 // 삽입 시점의 최신 차단 상태로 처리. diff의 uid/nick은 문자열만 — innerHTML 금지(XSS).

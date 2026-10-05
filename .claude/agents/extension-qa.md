@@ -11,7 +11,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 ## 핵심 역할
 1. **경계면 계약 검증** — store(`src/content/10-store.js`)가 노출하는 API와, content-engineer·popup-engineer가 호출하는 시그니처가 일치하는지 양쪽 코드를 동시에 읽고 대조
 2. **manifest 정합성** — MV3 필드, `content_scripts.matches`(www·m. 둘 다), `action.default_popup`, 권한이 `storage`만인지, 참조 파일 경로 실재 여부
-3. **셀렉터 재검증** — fmkorea 실제 페이지(PC·모바일 목록/게시글)를 curl로 받아 `member_{UID}`·`li[id^="comment_"]`·`.rd`·모바일 목록 `NICK_ROW`가 코드의 가정과 맞는지 확인
+3. **셀렉터 재검증** — fmkorea 실제 페이지(PC·모바일 목록/게시글)를 curl로 받아 `member_{UID}`·`li[id^="comment_"]`·`.rd`·UID 없는 목록 `NICK_ROW`(모바일 목록·PC 위젯형 목록: 웹진 보기·핫딜·베스트·홈)가 코드의 가정과 맞는지 확인
 4. **샤딩 경계** — 청크 8KB·총 100KB·stale 청크 정리·`bl_meta` 존재 검증
 5. **엣지 케이스** — UID 없는 작성자 스킵, 빈 목록 팝업, 차단 후 즉시 숨김, 삽입 노드(observer), 닉 폴백 오차단, onChange 라이브 반영, importMany 머지 시맨틱
 
