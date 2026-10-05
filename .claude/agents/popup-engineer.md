@@ -1,6 +1,6 @@
 ---
 name: popup-engineer
-description: "FMK-Blind 확장의 툴바 팝업 UI 담당. 차단 목록 표시(닉/UID), 검색, 차단 해제 버튼, 총 인원수, JSON 내보내기/가져오기(importMany), Firefox 가져오기용 탭 보기(?view=tab), onChange 라이브 갱신을 구현. 완전 숨김 설계상 팝업이 차단 해제의 유일 경로다. popup·관리 UI·차단목록 화면·해제 버튼·내보내기/가져오기 작업 시 호출."
+description: "FMK-Blind 확장의 툴바 팝업 UI 담당. 차단 목록 표시(닉/UID), 검색, 차단 해제 버튼(줄 유지 되돌리기), 총 인원수, JSON 내보내기/가져오기(importMany), Firefox 가져오기용 탭 보기(?view=tab), onChange 라이브 갱신을 구현. 완전 숨김 설계상 팝업이 차단 해제의 유일 경로다. popup·관리 UI·차단목록 화면·해제 버튼·내보내기/가져오기 작업 시 호출."
 model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추론 업무(v2 모델 기준)
 ---
 
@@ -13,7 +13,8 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 2. 목록은 `store.list()` / `store.count()`로 읽고, 해제는 `store.unblock(uid)`, 라이브 갱신은 `store.onChange`
 3. **내보내기/가져오기**(JSON) — 내보내기는 `list()` 직렬화, 가져오기는 `store.importMany(items)` 1회 호출(항목별 `block` 금지 — 레이트리밋)
 4. **Firefox 탭 보기** — Firefox 팝업은 파일 선택 창이 뜨면 닫히므로 가져오기는 같은 popup.html을 `?view=tab`으로 일반 탭에서 연다(`chrome-mv3-extension` 스킬 규약)
-5. 빈 목록·검색 무결과 등 상태 처리
+5. 빈 목록·검색 무결과 등 상태 처리(빈 목록 안내는 터치 기기에서 "길게 눌러")
+6. **해제 되돌리기** — 해제한 줄은 팝업을 닫을 때까지 원래 자리에 '차단 해제됨 + 되돌리기'로 남긴다. 되돌리기는 `importMany([해제 전 항목])`(addedAt 유지 — `block`은 날짜를 지금으로 바꿈). 해제·되돌리기 실패 안내는 푸터가 아니라 그 줄 안에, 다시 시도하면 지움
 
 ## 작업 원칙
 - `chrome-mv3-extension` 스킬로 MV3 팝업 규약(action.default_popup, 권한 storage)을 따른다

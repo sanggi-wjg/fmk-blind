@@ -1,584 +1,348 @@
-> ⚠️ **정정(2026-06-15, team-lead)**: 아래 영속화 수정 검증은 Node mock으로 "PASS"였으나, 실제 Chrome에서는 해제가 새로고침 후 되살아나는 **resurrection 버그가 잔존**했다. mock이 실 Chrome 직렬화·다중 컨텍스트(탭↔팝업)를 재현하지 못한 한계. 실브라우저 콘솔로 근본 원인(stale 탭이 언로드 flush로 옛 맵 되씀)을 확정하고 언로드 flush 제거로 최종 해소. 상세: CLAUDE.md 변경 이력 / store-api-contract.md §3 C8. 교훈: chrome.storage 버그는 실브라우저가 최종 판정.
+# QA 최종 재검증 보고서 — UI/UX 1차 묶음(실행 취소·오류 토스트·팝업 되돌리기), 2차 수정 루프
 
-# QA 검증 보고서 — FMK-Blind (task #6)
+- 담당: extension-qa (직접 모드, 리더에게만 보고, 소스는 고치지 않음)
+- 갱신: 2026-10-05 · 브랜치 `feat/undo-and-error-feedback`(작업 트리, 미커밋)
+- 대상: 직전 QA 이후 리더 수정분
+  - MINOR-2R(A2안): `50-toast.js` `absorbClicks()`, `content.css` `.fmkb-toast-absorb`
+  - R5/INFO-2: `.fmkb-toast-live` 상태 영역, `.fmkb-toast-msg` aria-hidden
+  - MINOR-8: `focusin` relatedTarget 기억 → `releaseFocus()`
+  - N9: popup.js `lastActedUid`
+  - 문서: PLAN/README/TODO
+- **10-store.js·20-selectors.js·manifest는 main과 같음(0.8.2)**
+- 방법
+  - jsdom: 실제 `10-store.js` + 모의 `chrome.storage.sync`(키 정렬·용량 계산·비동기 onChanged·장애 주입·쓰기 게이트) 위에서 실제 popup.js·content 00~99 로드
+  - 실 헤드리스 Chrome 154(puppeteer-core): 토스트 hit-testing, 키보드, CDP 접근성 트리
+  - **실제 확장**: Chrome for Testing `--load-extension`(고정 ID `mnnofigckdchafggopgbjanmjmcbjppc`), 실제 content script·`chrome.storage.sync`, 합성 fmkorea 페이지(요청 가로채기), 팝업은 탭으로 연다
+  - **실 Firefox 156**(puppeteer-core, WebDriver BiDi, 신규): 토스트 기하·키보드 경로
+- 스크립트: `/private/tmp/claude-501/-Users-raynor-vscode-workspace-fmk-blind/0bfd71b8-e788-404e-92a5-dcba222fefbd/scratchpad/qa/`
+  - 갱신: `t_toast.js`, `t_content.js`, `t_popup2.js`(직전본은 `*_r1.js`)
+  - 신규: `t_chrome3.js`, `t_ext3.js`, `t_ff3.js`
+  - 수정안 검증: `proto_R3_toast.js`, `extcopy3/`
+  - 판별력 확인: `altroot/` + `harness_alt.js` + `t_popup2_alt.js`(N9 이전 코드)
 
-- 담당: extension-qa
-- 갱신: 2026-06-14
-- 방법론: `.claude/skills/extension-qa-verification/SKILL.md` (경계면 교차 비교 우선)
-- 심각도: **blocker** > **major** > **minor** / 검증 불가 항목은 "미검증"으로 분류(통과 처리 금지)
+## 판정 요약
 
-## 진행 현황
+**blocker 0 · major 0 · minor 2(신규) · 정보 5**
 
-| 검증 영역 | 의존 | 상태 |
-|----------|------|------|
-| A. 셀렉터 라이브 재검증 | 라이브 fmkorea HTML | ✅ **PASS** (grep + jsdom 실측) |
-| B. store ↔ content 경계면 | #2, #3 | ✅ **PASS** |
-| C. store ↔ popup 경계면 | #2, #4 | ✅ **PASS** |
-| D. selectors ↔ hide 경계면 | #3 | ✅ **PASS** (실제 HTML jsdom 21/21) |
-| E. manifest 정합성 | #5 | ✅ **PASS** |
-| F. 샤딩 경계(8KB/100KB/stale/bl_meta) | #2 | ✅ **PASS** (node 25/25) |
-| G. 엣지 케이스 | #3, #4 | ✅ PASS |
+이번 수정 4건은 의도한 경로에서 모두 동작한다.
+- MINOR-2R: 버튼 가운데를 더블클릭하면 두 번째 클릭이 페이지로 가지 않는다(실 Chrome 0/12·0/3·0/4, 실제 확장 0/3, Firefox 0/3).
+- INFO-3: 사라졌다.
+- R5: 접근성 트리에 상태 영역이 늘 남고 문구는 한 번만 노출된다.
+- MINOR-8: Enter를 누르면 포커스가 원래 요소로 돌아간다.
+- N9: 마지막으로 누른 줄로만 포커스가 간다.
+- 기존 팝업·content 회귀는 없다.
 
-> **최종: 전 검증 영역 PASS. MAJOR-1 수정+재검증 완료(RESOLVED). MINOR-1만 v1 수용으로 잔존(무해).**
->
-> **재검증 #2(2026-06-15, Task #3): 영속화 누락 버그 — block/unblock 즉시·awaitable 영속화 수정 검증 PASS(28/28 + 회귀 25/25). 상세는 문서 하단 "✅ 수정 후 결과" 섹션.**
+남은 문제 2건은 모두 같은 종류다. 실행 취소 직후의 두 번째 입력이 페이지로 새는데, 두 브라우저(Chrome·Firefox)에서 모두 재현된다.
+- **MINOR-2R2**: 후속 토스트가 원래 토스트보다 좁으면, 버튼 오른쪽 끝을 다시 누를 때 그 클릭이 페이지로 간다.
+  - 데스크톱 주 경로(차단 → 실행 취소)는 안전하다.
+  - 메뉴로 해제 → 실행 취소 경로와 터치에서는 샌다.
+- **MINOR-9**: MINOR-8 수정으로 새로 생겼다. Enter를 두 번 누르면 두 번째 Enter가 포커스가 돌아간 원래 요소(링크)를 실행한다. 이 수정 전에는 BODY로 가서 아무 일도 없었다.
 
-## 발견 사항 요약
+두 건을 함께 막는 수정안(`proto_R3_toast.js`)을 검증해 두었다. 결과는 실 Chrome 40/40, 실제 확장 25/25, Firefox 5/5, jsdom 66/66이다.
 
-| ID | 심각도 | 제목 | 소유 | 상태 |
-|----|--------|------|------|------|
-| MAJOR-1 | major | 팝업 해제(unblock)가 디바운스 flush 전 팝업 종료 시 sync에 유실 | storage | ✅ **RESOLVED**(최종=내부 보강만, 재검증 15/15) |
-| MINOR-1 | minor | document_end 비동기 load 동안 차단 대상 깜빡임(FOUC) | content (구조적 한계) | 🟡 v1 수용(잔존, 무해) |
-| MINOR-2 | minor | content 차단 직후 <500ms 내 이탈 시 동일 원인으로 유실 | storage | ✅ **RESOLVED**(MAJOR-1 수정에 흡수) |
-| CLEANUP-1 | minor(비치명) | popup.js가 제거된 `store.flush`를 참조(가드된 죽은 코드) | popup | ✅ **RESOLVED**(popup v1 환원, flush 토큰 0) |
-
-> **최종 디스포지션 = B (v1, 공개 flush 없음).** store는 공개 API 6개 + 내부 자동 flush(C8), popup은 명시 flush 없이 store 자동 flush만으로 내구. 경계면 C: popup이 호출하는 store 멤버 = `{load, list, count, unblock}` ⊆ 6 공개 API, **flush 미참조(코드·주석 0)** 확정 — 기검증 API의 부분집합이라 비회귀.
-
----
-
-## A. 셀렉터 라이브 재검증 — ✅ PASS
-
-라이브 HTML을 직접 수신해 PLAN.md의 "검증된 DOM 사실"을 독립 대조함(가정 통과 아님).
-
-수신 환경:
-- UA: `Mozilla/5.0 (Macintosh; ...) Chrome/120.0.0.0 Safari/537.36`
-- 보드목록: `GET https://www.fmkorea.com/index.php?mid=humor` → **HTTP 200, 75,088 B**
-- 게시글: `GET https://www.fmkorea.com/9956267099` → **HTTP 200, 87,524 B**
-- 수신 시각: 2026-06-14 (라이브 검증, 미검증 아님)
-
-### A-1. 작성자 앵커 / UID 추출 — PASS
-라이브 증거(목록·게시글 공통):
-```html
-<a href='#popup_menu_area' onclick='return false;' class='member_515859774 member_plate' >
-<a href='#popup_menu_area' onclick='return false;' class='member_4120586159 member_plate'  data-comment_srl="9956275475">
-```
-- `member_(\d+)` 로 UID 추출 시 `member_plate`는 숫자 없어 자동 제외 → PLAN Q1 규칙 유효.
-- **주의(앵커 class는 작은따옴표 `'...'`)**: 코드의 셀렉터/정규식이 `class=\"...\"`(쌍따옴표)를 가정하면 안 됨. `a[class*="member_"]` 같은 속성 셀렉터·`className`·`classList` 기반이면 따옴표 무관(안전). 정규식으로 raw HTML을 파싱하는 코드라면 따옴표 가정 금지 — 30-hide/20-selectors 도착 시 확인.
-- 댓글 작성자 앵커에는 `data-comment_srl` 존재, 게시글 본문 작성자 앵커에는 없음(컨테이너 판정으로 구분 가능).
-
-### A-2. 보드목록 행 컨테이너 — PASS (테이블형 `tr`)
-라이브 증거:
-```html
-<tbody> <tr class="notice ..."> ... <td class="author"><span>
-  <a ... class='member_515859774 member_plate' ><img ...></a>
-</span></td> </tr>
-```
-- humor 보드는 **테이블형**: `tr > td.author > span > a.member_{UID}`. `td class="author"` 23회 출현.
-- 따라서 `anchor.closest('tr, li')` → `tr` 매칭 ✓. (웹진형 `li` 보드도 동일 규칙으로 흡수 — PLAN 규칙 3 유효)
-
-### A-3. 댓글 컨테이너 — PASS
-라이브 증거:
-```html
-<li id="comment_9956275475" class="fdb_itm clear  comment-9956275482">
-```
-- `li[id^="comment_"]` ✓, class `fdb_itm` ✓ (베스트댓글도 `li.fdb_itm` 동일 — PLAN Q8 자동 포함 유효). 게시글 내 5개 댓글 li 확인.
-
-### A-4. 게시글 본문 컨테이너 — PASS
-라이브 증거:
-```html
-<div class="rd rd_nav_style2 clear"> ... <div id="bd_capture"> ... <div class="rd_hd clear"> ... <div class="top_area ngeb"> ...작성자 앵커...
-```
-- `.rd`(본문 전체 숨김 대상) ✓, `.rd_hd` ✓, `.top_area` ✓, `#bd_capture` ✓.
-- 계층: `.rd > #bd_capture > .rd_hd > .top_area` 확인 → 게시글 작성자 앵커는 `.top_area` 내부, 숨김 대상 `.rd`는 그 조상. `anchor.closest('.rd_hd, .top_area')`로 게시글 작성자 판정 후 `.rd` 숨김 흐름 유효.
-- 페이지 내 `.rd`는 1개(본문)만 매칭 → 과다 숨김 위험 낮음.
-
-**A 결론: PLAN.md의 모든 DOM 사실이 라이브 마크업과 일치. 셀렉터 가정 PASS.**
-**남은 검증점(코드 도착 시):** 20-selectors/30-hide가 위 규칙을 *그대로* 구현하는지(따옴표 가정·closest 우선순위·`.rd` 선택), 즉 D 경계면에서 확인.
+| 묶음 | 실행 | PASS | FAIL | 비고 |
+|------|-----:|-----:|-----:|------|
+| 팝업 ↔ 실제 store 기존 (`t_popup.js`) | 61 | 60 | 1 | P11(정보, 동률 순서), 직전과 같음 |
+| 팝업 신규 경로 (`t_popup2.js`) | 63 | 63 | 0 | N9 겹침 11건 추가 |
+| content 전체 모듈 + 실 마크업 (`t_content.js`) | 46 | 46 | 0 | 흡수 창·live 영역 단정 갱신 |
+| 토스트 가짜 시계 (`t_toast.js`) | 66 | 66 | 0 | 흡수 창·live·포커스 복귀 33건 추가 |
+| 실 Chrome 기존 (`t_chrome_toast` 7, `t_chrome_tab` 1, `t_chrome_fix` 3) | 11 | 11 | 0 | 회귀 없음 |
+| 실 Chrome 직전 라운드 (`t_chrome2.js`) | 19 | 17 | 2 | 2건 모두 **의도된 변경**(INFO-3 제거, 숨김 뒤에도 live 영역 유지) |
+| 실 Chrome 이번 라운드 (`t_chrome3.js`) | 40 | 38 | 2 | S1e = MINOR-2R2, S3b = MINOR-9 |
+| **실제 확장** (`t_ext3.js`) | 25 | 24 | 1 | E6 = MINOR-9 |
+| **실 Firefox 156** (`t_ff3.js`) | 5 | 3 | 2 | F2 = MINOR-2R2, F3 = MINOR-9 |
+| 셀렉터 라이브(PC 목록·게시글·모바일 목록) | 3 | 3 | 0 | 모두 HTTP 200 |
+| **합계** | **339** | **331** | **8** | 실제 결함 5건(원인 2개), 의도된 변경 2건, 정보 1건 |
 
 ---
 
-## F. 샤딩 경계 (store.js) — ✅ PASS
+## 이전 이슈별 해소 여부
 
-대상: `src/content/10-store.js`. 방법: 정적 분석 + **Node 실행 검증**(mock `chrome.storage.sync`, `/tmp/store_qa_test.js`, 25/25 통과).
-
-### F-1. API 시그니처 ↔ 계약 대조 (store측) — PASS
-계약 `.claude/workspace/store-api-contract.md` §2의 6개 메서드 전부 일치:
-
-| 메서드 | 계약 | 구현(라인) | 판정 |
-|--------|------|-----------|------|
-| `load()` | Promise, 멱등 | 266–270 `if(loadPromise)return loadPromise` | ✓ |
-| `isBlocked(uid)` | 동기 boolean, string화 | 277–279 `map.has(String(uid))` | ✓ |
-| `block(uid,nick)` | 즉시 메모리, 멱등(nick갱신·addedAt보존) | 288–298 | ✓ |
-| `unblock(uid)` | 즉시 메모리, 없으면 no-op | 305–309 `if(map.delete(uid))` | ✓ |
-| `list()` | `{uid,nick,addedAt}` 복사본·addedAt desc | 315–322 | ✓ |
-| `count()` | 동기 number | 328–330 `map.size` | ✓ |
-
-불변식 C1(string)~C7(실패내성) 전부 충족. C7: `persist()` 실패 시 throw 없이 메모리 유지+경고+재시도(160–171).
-
-### F-2. 8KB/항목 · 100KB/총량 — PASS (실측)
-- 상수: `CHUNK_BUDGET=7168`(31행, 8192 안전마진 1024B), `TOTAL_BUDGET=102400`, `QUOTA_WARN=90%`(33행).
-- 실행 증거(400개 긴닉네임): 7청크 분할, **최대 항목 7113B ≤ 8192**(chrome `QUOTA_BYTES_PER_ITEM`), **총 49431B ≤ 102400**(chrome `QUOTA_BYTES`).
-- 크기 측정은 `JSON.stringify(chunk)` UTF-8 바이트(58–61행 `TextEncoder`)로 chrome 기준과 동일. 키(`bl_N`) 길이 미포함이나 1024B 마진이 충분히 흡수.
-- 단일 항목 초과 시 경고만 하고 best-effort 기록(116–118) — v1 의도된 동작.
-
-### F-3. stale 청크 정리 + bl_meta — PASS (실측)
-- 청크 수 감소 시 `bl_{k}`(k≥새 청크수) `sync.remove`(145–147, 162행).
-- 실행 증거: 400→5개 해제 시 **7청크→1청크**, 잔존 키 `bl_0`만(유령 키 0, 인덱스 연속). 빈 목록 시 `bl_0`까지 제거되고 `bl_meta`만 잔존.
-- `bl_meta={ver:1}` 기록(137행) 및 복원·버전 체크(206–211, 255행). reload 시 변경분만 쓰도록 `persistedChunks` 스냅샷(242–254).
-
-### F-4. 디바운스 · 재진입 — PASS
-- 500ms 디바운스(`schedulePersist` 173–179), 재진입 가드(`persisting`/`rerun`, 181–190) → 영속 중 변경분 유실 없음(persist 종료 후 재flush). 실행 검증에서 연속 400 block도 정상 합류.
-
-> **결론(F):** 샤딩 경계 전부 PASS. store.js 자체는 계약·제약을 완전 충족. 소비자측(content/popup) 호출부 일치는 B/C에서 #3/#4 도착 시 확정.
+| 이전 항목 | 내용 | 결과 | 근거 |
+|-----------|------|------|------|
+| MINOR-2R | 실행 취소 뒤 후속 토스트가 클릭 흡수를 풀어 두 번째 클릭이 새는 문제 | **해소(버튼 가운데)** → 가장자리 잔여는 MINOR-2R2 | 아래 1절 |
+| INFO-3 | 자동 숨김 뒤 0.5초 동안 보이지 않는 토스트가 클릭을 흡수 | **해소** | 실 Chrome S2: 숨김 200ms 뒤 클릭이 페이지에 닿음. Firefox F4 같음. jsdom: 자동 숨김엔 absorb 클래스가 없음 |
+| INFO-2 / R5 | 숨겨져 있던 status 영역이 뜨는 순간 문구가 바뀜 | **해소(구조 기준)**. 실제 낭독은 미검증 | 아래 2절 |
+| MINOR-8 | 키보드 실행 취소 뒤 포커스가 BODY로 초기화 | **해소**. 단, 부작용으로 MINOR-9 생김 | 아래 3절 |
+| N9(리뷰) | 여러 줄 작업이 겹칠 때 먼저 끝난 줄이 포커스를 가져감 | **해소** | 아래 4절 |
+| MINOR-1·3·4·5 | 되돌리기 실패 줄·Tab 순서·터치 높이·대기 중 줄 | 회귀 없음 | `t_popup` P9·P10, `t_chrome_tab`(`l2 -> BODY -> l1`), S5(데스크톱 38/38px·터치 45/45px, 버튼 45px) |
+| INFO-1 (P11) | addedAt 동률 묶음 안에서 줄 자리 변화 | 정보, 변경 없음 | 저장 중 `1,3,4,2` → 해제됨 `2,1,3,4` |
+| MINOR-7 | importMany invalid에도 "잠시 후 다시 시도" 문구 | 정보, 변경 없음 | 숫자 uid만 오가는 현 경로에선 도달하지 않음 |
+| DOC-2 | 키보드 포커스로 멈추는 동작이 문서에 없음, content.css 주석 | **해소** | PLAN Q9, README, TODO에 "키보드로 포커스하면 멈춤" 반영, content.css 60-61·83-84 주석 갱신. 버전 범프(0.8.2 = main)와 CLAUDE.md 이력은 Phase 6 몫으로 남음 |
 
 ---
 
-## B. store ↔ content 경계면 — ✅ PASS
+## 중점 검증 결과
 
-content의 store 호출은 `src/content/99-main.js`(유일 배선부)에 집중. 다른 content 모듈(20/30/40/50)은 store 비의존(주입식).
+### 1. MINOR-2R(A2) — 실 Chrome·실제 확장·Firefox
+- **S1 행렬**(쓰기 지연 0/10/40/120ms × 간격 40/150/300ms, 실제 후속 토스트, 버튼 가운데 클릭)
+  - 12건 모두 누수 0, 실행 1회.
+  - 직전 라운드는 11/12가 샜다.
+- **S1b** 오류 후속 토스트: 간격 40/150/300ms에서 누수 0/3.
+- **S1c** 후속 토스트 없음(클릭만 흡수): 간격 40/150/300/450ms에서 누수 0/4. visibility 0.5초 지연 덕분에 흡수가 그 자리에서 동작한다.
+- **S1d** 흡수 창 이후
+  - 약 420ms에 누른 클릭은 흡수된다.
+  - 약 650ms에는 후속 토스트가 보이는 중에도 `absorb` 클래스가 빠지고 `pointer-events:none`이라 클릭이 페이지에 닿는다.
+- **S2** 일반·오류 토스트는 클릭을 막지 않는다. 표시 중에도, 숨김 100ms 뒤에도 페이지가 클릭을 받는다(4/4).
+- **실제 확장 E1**(실제 store 쓰기, 후속 토스트가 8~9ms 뒤에 뜸)
+  - 간격 60/150/300ms에서 두 번째 클릭 누수 0/3.
+  - 댓글 복구, sync에서 빠짐 확인.
+  - E1b(버튼 왼쪽·오른쪽 10%, 데스크톱 차단 → 실행 취소): 누수 0.
+- **실 Firefox 156 F1**: 간격 40/150/300ms에서 0/3. 리더 결과(150ms 흡수, 창 이후 통과)와 일치한다.
+- jsdom
+  - 흡수 클래스는 클릭 직후 붙고 정확히 500ms에 빠진다.
+  - `show()`는 이 클래스를 건드리지 않는다.
+  - 실행 취소를 다시 누르면 타이머가 다시 시작한다.
+  - 흡수 중 토스트가 DOM에서 빠져도 예외가 없다.
+- 잔여: 버튼 가장자리 → **MINOR-2R2**
 
-| 호출(99-main) | store 정의 | 판정 |
-|---------------|-----------|------|
-| `await store.load()` (20행) | `load():Promise` 멱등 | ✓ |
-| `store.isBlocked(uid)` (27,31행) | `isBlocked(uid):boolean` 동기 | ✓ |
-| `await store.block(uid, nick)` (35행) | `block(uid,nick):Promise` | ✓ 인자 순서 일치 |
-| `await store.unblock(uid)` (41행) | `unblock(uid):Promise` no-op | ✓ |
+### 2. R5 — 실 Chrome 접근성 트리(CDP `Accessibility.getFullAXTree`)
 
-- **uid 타입(C1)**: content는 `selectors.extractUid()`가 정규식 캡처 `m[1]`(문자열)을 넘김 → store도 `String(uid)`. 양측 문자열 일치. `hideForAnchor`의 `dataset[fmkbUid]=uid`, `hideByUid`의 `extractUid(a) !== uid` 비교도 문자열-문자열. ✓
-- store 미탑재/실패 시 안전 폴백(99-main 14·22행: 차단 없이 정상 노출). ✓
-- **storage 우회 없음**: `grep chrome.storage src` → 10-store.js에만 존재. content는 store API만 사용. ✓
+| 시점 | status 노드 | 무시됨 | live | 자식 문구 | 보이는 문구 StaticText 수 | 버튼 |
+|------|:---:|:---:|:---:|------|:---:|:---:|
+| 표시 중 | 1 | 아니오 | polite | `낭독 테스트` | **1** | 있음 |
+| 숨김 뒤(visibility:hidden) | 1(같은 DOM 노드) | 아니오 | polite | `두번째`(마지막 문구) | 1 | 없음 |
+| 다시 표시 약 15ms | 1(같은 노드) | 아니오 | polite | `''` | - | - |
+| 다시 표시 50ms 뒤 | 1(같은 노드) | 아니오 | polite | `세번째 안내` | **1** | 있음 |
 
-## C. store ↔ popup 경계면 — ✅ PASS
+- 숨김 중에도 status 노드는 같은 DOM 노드로 트리에 남는다. 다시 뜰 때는 기존 live 영역 안에서 문구가 `'' → 문구`로 바뀐다(DOM에서 텍스트 노드가 빠졌다가 다시 들어감).
+- `.fmkb-toast-msg`는 aria-hidden이라 보이는 문구가 두 번 노출되지 않는다.
+- 실제 확장 E7: 차단 토스트 표시 중 status 1개, 문구 1회 노출, 자동 숨김 뒤에도 status가 남는다.
+- jsdom
+  - 같은 문구를 다시 띄우면 텍스트 노드가 빠졌다가 다시 들어간다(기록 `-하나|+하나`).
+  - 50ms 안에 A → B로 바뀌면 B만 남는다.
+  - XSS 문자열은 텍스트로만 들어간다.
+- 레이아웃: live 자식을 빼고 재도 크기가 같다(데스크톱 38×167, 터치 45×191).
+- 미검증
+  - CDP `Accessibility.nodesUpdated` 이벤트가 0건이었다. 도구 한계로 보이며, 실제 낭독기(VoiceOver/NVDA)의 알림은 확인하지 못했다.
+  - 숨긴 뒤 마지막 문구가 남는 점은 INFO-4로 정리했다.
 
-popup은 `src/popup/popup.html`에서 **동일 파일** `../content/10-store.js`를 먼저 로드 후 `popup.js`(별도 사본 없음 — 단일 출처). `chrome.storage` 직접 접근 0건(grep 확인).
+### 3. MINOR-8 — 포커스 복귀
+- 실 Chrome S3(키보드)
+  - Tab으로 들어가면 멈추고, Shift+Tab으로 나가면 1.5초 뒤 사라진다.
+  - 사라진 버튼은 Tab 대상이 아니다.
+  - Enter를 누르면 실행은 1회이고 포커스가 원래 요소 `#l2`로 돌아간다.
+  - 실제 흐름(후속 토스트가 버튼을 `[hidden]` 처리)에서는 그다음 Tab이 버튼에 닿지 않는다.
+- S3c
+  - 원래 요소가 DOM에서 빠졌거나 `display:none`이면 BODY로 간다. `.fmkb-hidden` 댓글 안 앵커와 같은 경우다.
+  - 페이지를 1500px 스크롤한 뒤 Enter를 눌러도 `scrollY`가 그대로다(preventScroll).
+- S3d 마우스 경로(Chrome은 mousedown 때 버튼에 포커스를 준다)
+  - 입력창에 있다가 클릭하면 입력창으로 돌아간다.
+  - BODY에서 클릭하면 BODY로 간다. 버튼에 남지 않는다.
+  - 링크에 포커스가 있을 때 더블클릭해도 링크는 실행되지 않고 페이지도 클릭되지 않는다. 다만 두 번째 mousedown이 포커스를 못 받는 토스트에 떨어져 브라우저가 blur하므로 BODY가 된다(INFO-7).
+- 실제 확장 E6(단일 Enter): 실행 취소가 되고 포커스는 원래 요소 `#under`로 돌아가며, 원래 요소는 실행되지 않는다.
+- Firefox F3(단일 Enter): `#l2`로 돌아간다.
+- jsdom 8건
+  - 버튼에 포커스가 간 적 없는 마우스 클릭(Firefox·Safari mac)에서는 예전에 기억해 둔 요소로 포커스를 빼앗지 않는다.
+  - onClick은 포커스 복귀 뒤에 실행되고, onClick 안에서 옮긴 포커스가 우선한다.
+- 잔여: Enter 두 번 → **MINOR-9**
 
-| 호출(popup.js) | store 정의 | 판정 |
-|----------------|-----------|------|
-| `store.load()` (267행) | `load():Promise` | ✓ |
-| `store.list()` → `it.uid/it.nick/it.addedAt` (144·156·158·187행) | `list():[{uid,nick,addedAt}]` desc·복사본 | ✓ **필드명 정확 일치** |
-| `store.count()` (127행) | `count():number` | ✓ |
-| `store.unblock(String(it.uid))` (218행) | `unblock(uid:string)` | ✓ 문자열 전달 |
+### 4. N9 — 겹친 줄 작업의 포커스(jsdom 11건 + 실제 확장 팝업)
+- A(222) → B(333) 순으로 누르고 A 저장을 붙잡아 둔 뒤 차례로 풀었다.
+  - A가 끝날 때 포커스는 BODY에 그대로 있다.
+  - B가 끝나면 333 '되돌리기'로 간다.
+- B가 실패하면 333 '차단 해제'(활성)에 오류 안내와 함께 포커스가 간다.
+- A가 실패하면 A 줄에는 오류만 표시되고, 포커스는 B로 간다.
+- 겹치는 동안 사용자가 검색창으로 옮기면 검색창을 유지한다.
+- 되돌리기 A와 해제 B가 겹쳐도 B로 간다.
+- 단일 작업 회귀 없음(R2/N7 PASS).
+- **판별력**: 같은 테스트를 N9 이전 코드(`focusUid = uid` 무조건)에 돌리면 7건이 FAIL이다. 포커스가 A의 `fmkb-restore:222`에 머문다. 현재 코드는 0건 FAIL이다.
+- 실제 확장 E8(실제 Chrome 포커스 정리: 비활성 버튼 → BODY)
+  - A = 111 되돌리기(저장 붙잡음), B = 444 해제.
+  - A가 끝날 때 BODY를 유지하고, 최종 포커스는 `fmkb-restore:444`다.
 
-- 반환 `list()` 필드 `uid/nick/addedAt`을 그대로 소비(닉 없으면 '(닉네임 없음)' 표시 144행, addedAt→formatDate). 누락/오타 필드 없음. ✓
-- API 미탑재 방어(245–255행)·load 실패 방어(C7, 266–271행) 구현. ✓
-
-## D. selectors ↔ hide 경계면 — ✅ PASS (실제 HTML jsdom 실측)
-
-검증: `jsdom`으로 **실제 fmkorea HTML**(/tmp/doc.html 게시글, /tmp/list.html 목록)에 `00→20→30` 로드 후 실행(`/tmp/dom_qa_test.js`, **21/21 통과**).
-
-- `hide.hideForAnchor`(30-hide 12–18행)는 `selectors.findContainer(anchor)` 반환 컨테이너를 **타입 무관**하게 `classList.add(HIDDEN_CLASS)` + `dataset` 표식 → 댓글 li / `.rd` / 행(tr·li) 모두 동일 처리. ✓
-- 실측 분류(게시글 26앵커): **댓글 5(li#comment_) · 게시글 1(.rd) · 목록행 20(사이드 위젯) · null 0 · UID없음 0**.
-- **댓글만 차단** → 해당 `li#comment_`만 `.fmkb-hidden`, 본문 `.rd`는 미숨김 ✓ (판정 순서 ①댓글 우선이 본문 오숨김 방지).
-- **동일 UID 중복 컨테이너 전부 숨김** ✓ (베스트댓글/다중 출현 커버리지 — PLAN Q8).
-- **게시글 작성자 차단** → `hideByUid`로 `.rd` 숨김 + `data-fmkb-uid` 표식 ✓. `unhideByUid` 복구·표식 제거 ✓.
-- **목록**: 행 컨테이너 `TR`(테이블형), `scan`이 행 숨김 ✓. comment/`.rd` 오분류 없음 ✓.
-- `member_plate`만 가진 합성 앵커 → `extractUid` **null**(조용히 스킵) ✓.
-
-## E. manifest 정합성 — ✅ PASS
-
-검증: JSON 파싱 + 참조 파일 실재 프로그램 확인.
-
-- `manifest_version: 3` ✓
-- `permissions: ["storage"]` **단독** — `host_permissions` 없음, `scripting/tabs/cookies/windows` 없음 ✓. 코드 전수 grep상 `chrome.tabs/scripting/runtime.sendMessage` 미사용(오직 `chrome.storage` + `chrome.runtime.lastError` 읽기, 후자는 권한 불요) → **권한 최소화 충족, 누수 0**.
-- `content_scripts[0].matches: ["https://www.fmkorea.com/*"]` ✓
-- `js` 7개: `00→10→20→30→40→50→99` **순서 일치**·전부 실재. store(10)가 소비자(20~99)보다 앞 ✓. `00-namespace`(상수)가 최선두 ✓.
-- `css: ["src/content.css"]` 실재 ✓ (경로 드리프트 없음).
-- `action.default_popup: "src/popup/popup.html"` 실재 ✓. popup.html 하위참조 `popup.css`·`../content/10-store.js`·`popup.js` **전부 실재(누락 0)**.
-- **아이콘 키 없음 확인**: `action.default_icon` 없음, 최상위 `icons` 없음 → **의도된 v1 제약**(누락 아님, TODO 항목). 무아이콘으로도 MV3 로드 가능.
-- `run_at: "document_end"` ✓ (99-main이 `readyState` 추가 방어).
-
-## G. 엣지 케이스 — ✅ PASS (+발견 사항)
-
-| 케이스 | 검증 결과 |
-|--------|-----------|
-| UID 없는 작성자 스킵 | scan `if(!uid)return`(30-hide 46행), contextmenu `if(!uid){closeMenu();return;}`(40 74행, preventDefault 안 함→기본 메뉴 유지) ✓ |
-| 빈 차단 목록 팝업 | render 빈 상태 메시지(popup 193–200행), 미크래시 ✓ |
-| 작성자 앵커 위에서만 메뉴 | `e.target.closest(AUTHOR_ANCHOR)`; 앵커 밖/UID없음 → preventDefault 안 함(40 67·74·80행) ✓ |
-| 차단 직후 현재 탭 즉시 숨김 | onBlock→`store.block`→`hideByUid`(99-main 35–36행) ✓ |
-| 팝업 해제 후 새로고침 반영 안내 | popup.html 27–29행 안내문 존재 ✓ (가시성 한계는 v1 수용) |
-| 베스트댓글 중복 숨김 | D에서 실측 — 동일 UID 다중 컨테이너 전부 숨김 ✓ |
+### 5. 계약·manifest·셀렉터
+- store·manifest·selectors는 diff가 없다.
+  - content는 `load/isBlocked/block/unblock/list/onChange/importMany`, popup은 `load/list/count/isBlocked/unblock/onChange/importMany/block`(폴백)만 쓴다. 계약 C10(`importMany([항목])`로 addedAt 유지)과 일치한다.
+- 셀렉터 라이브(실제 `20-selectors.js`로 대조)
+  - PC 목록 `mid=humor`: 200, UID 앵커 23개, 컨테이너 TR 23.
+  - 게시글 `/1598251840`: 200, `.rd` 1, `li#comment_` 39, 하단 목록 TR 27.
+  - 모바일 목록 `m.fmkorea.com/humor`(모바일 UA): 200, `NICK_ROW` 24행, 닉네임 23개 추출.
+- 샤딩 경계(8KB/100KB/stale/bl_meta)는 저장 계층 diff가 없어 재검증하지 않았다.
 
 ---
 
-## 발견 사항 (상세)
+## 발견 사항
 
-### [MAJOR-1] 팝업 차단 해제가 디바운스 flush 전 팝업 종료 시 sync 저장에서 유실
-- **위치**: `src/content/10-store.js` `unblock`(305–309행) → `schedulePersist`(173–179, `DEBOUNCE_MS=500`) ↔ `src/popup/popup.js` `onUnblock`(216–226행). 팝업측 flush-on-close 훅 없음(`grep pagehide|beforeunload|visibilitychange` → 0).
-- **증거**(`/tmp/popup_flush_test.js` 실행):
+### [minor] MINOR-2R2 — 후속 토스트가 원래 토스트보다 좁으면, 실행 취소 버튼 오른쪽 끝을 다시 누를 때 그 클릭이 페이지로 감
+- 위치
+  - `src/content.css:85`: `#fmkb-toast.fmkb-toast-absorb { pointer-events:auto }`. 흡수 범위가 지금 보이는 토스트 상자 크기를 따른다.
+  - `src/content/99-main.js:156,171`: 후속 토스트는 버튼이 없어 버튼 폭(데스크톱 약 64+14px)만큼 좁아진다.
+  - `src/content/50-toast.js:52`(`absorbClicks`)
+- 증거(`t_chrome3.js` S1e)
+  - 조건: 간격 150ms, 쓰기 10ms, 실제 문구, 버튼 폭의 10%·50%·90% 지점 클릭.
+
+  | 화면 | 경로 | 닉 4종 결과 | 버튼 오른쪽 끝 / 후속 토스트 오른쪽 끝(홍길동) | 덮이지 않는 폭 |
+  |------|------|------|------|------|
+  | 데스크톱 | 차단 → 실행 취소(주 경로) | **누수 없음** | 501 / 496 | 약 5px(90% 지점은 안쪽) |
+  | 데스크톱 | 메뉴 해제 → 실행 취소 | 오른쪽 90% **4/4 누수** | 514 / 496 | 약 18px(버튼의 약 27%) |
+  | 터치 | 차단 → 실행 취소 | 오른쪽 90% **4/4 누수** | 521 / 510 | 약 11px(약 15%) |
+  | 터치 | 메뉴 해제 → 실행 취소 | 오른쪽 90% **3/4 누수**(긴 닉은 줄바꿈으로 예외) | 536 / 510 | 약 26px(약 36%) |
+
+  - 버튼 가운데(50%)는 모든 조건에서 새지 않는다.
+  - 실 Firefox F2(홍길동)도 같다. 데스크톱 해제 경로, 터치 차단·해제 경로 3/4가 샜다.
+  - 실제 확장 E1b(데스크톱 차단, 닉 `댓글러`): 버튼 오른쪽 끝 551, 후속 토스트 오른쪽 끝 546으로 누수 0.
+- 영향
+  - 실행 취소를 두 번 누를 때 두 번째 입력이 버튼 오른쪽 끝에 떨어지면 토스트 아래 페이지(목록 행·링크)가 클릭돼 의도치 않게 이동한다.
+  - 터치는 두 번 탭이 흔한 환경이라 주 경로(차단 취소)에서도 나타난다.
+  - 데이터 손실은 없다.
+  - 직전 MINOR-2R 수정안 검증은 버튼 가운데만 눌러서 이 경계를 놓쳤다(QA 쪽 누락).
+- 수정안(검증됨, `proto_R3_toast.js`)
+  - A2는 그대로 둔다. 클릭 순간 토스트 영역(rect)을 기억하고, 0.5초 동안 그 안에서 토스트 밖으로 가는 포인터·마우스 이벤트를 capture 단계에서 막는다(아래 코드의 `onGuardPointer`).
+  - A2는 후속 토스트 위의 모든 이벤트 종류(터치 포함)를 받는다. rect 가드는 후속 토스트보다 넓었던 원래 자리를 메운다.
+  - 결과: 실 Chrome S1e 0/48(화면 2 × 경로 2 × 닉 4 × 지점 3), 실제 확장 25/25, Firefox F2 0/4.
+  - 대안: 흡수 동안 토스트 `min-width`를 원래 폭으로 고정한다. 단순하지만 0.5초 뒤 폭이 줄어드는 게 보인다.
+
+### [minor·a11y] MINOR-9(신규, MINOR-8 수정의 부작용) — Enter를 두 번 누르면 두 번째 Enter가 포커스가 돌아간 원래 요소(링크)를 실행
+- 위치: `src/content/50-toast.js:43-50`(`releaseFocus`). 실행 취소의 첫 Enter 처리 중에 포커스를 원래 요소로 즉시 돌려준다.
+- 증거
+  - 실 Chrome S3b(원래 요소 = 링크 `#l2`): Enter 두 번 연속, 30ms 간격, 150ms 간격 모두 `l2` 클릭 1회(3/3). 키를 누르고 있어 자동 반복된 경우는 0이다.
+  - **MINOR-8 이전 코드**(`extcopy/`의 blur 버전)로 같은 테스트를 돌리면 0/3이다. 즉 이번 수정으로 생긴 회귀다.
+  - 실제 확장 E6(double): 실행 취소가 되고 원래 요소 `#under` 링크가 실행됐다(`underActivated:1`).
+  - 실 Firefox F3(double): `l2` 클릭 1회.
+- 영향
+  - 키보드 사용자가 실행 취소에서 Enter를 두 번(또는 빠르게) 누르면 두 번째 Enter로 원래 요소가 실행된다.
+  - 토스트가 body 끝에 있으므로 원래 요소는 보통 페이지의 마지막 포커스 요소(하단 링크 등)다. 마우스 더블클릭 누수(MINOR-2R)의 키보드판이다.
+  - 주소창에서 Shift+Tab으로 들어온 경우는 relatedTarget이 null이라 BODY로 가서 해당이 없다.
+- 수정안(검증됨, `proto_R3_toast.js`): 포커스를 실제로 돌려준 경우에만 0.5초 동안 토스트 밖의 Enter·Space keydown을 capture 단계에서 막는다.
+  - 결과: S3b 0/4, E6 PASS, F3 PASS. 단일 Enter 포커스 복귀와 jsdom 66/66은 그대로다.
+  - 다듬을 점(선택): 클릭 이벤트의 `e.detail === 0`(키보드로 누름)일 때만 키를 막는다. 그러면 Chrome 마우스 경로에서 입력창으로 돌아간 직후의 Enter 입력(0.5초 안)을 막지 않는다.
+  - 대안: 포커스 복귀를 흡수 창 끝(500ms)으로 미룬다. 그동안은 BODY에 두고, 그 시점에 activeElement가 BODY일 때만 돌려준다. 코드는 짧지만 화면 낭독기에는 포커스 이동이 0.5초 늦게 알려진다.
+
+  ```js
+  // proto_R3_toast.js — 50-toast.js 현재본 대비 추가분(검증본)
+  let guardRect = null, guardUntil = 0, keyGuardUntil = 0;
+  function onGuardPointer(e) {
+    if (Date.now() > guardUntil || !guardRect) return;
+    if (el && el.contains(e.target)) return;            // 토스트가 받는 건 A2(pointer-events)에 맡김
+    if (e.clientX >= guardRect.left && e.clientX <= guardRect.right &&
+        e.clientY >= guardRect.top && e.clientY <= guardRect.bottom) { e.preventDefault(); e.stopPropagation(); }
+  }
+  function onGuardKey(e) {
+    if (Date.now() > keyGuardUntil) return;
+    if ((e.key === 'Enter' || e.key === ' ') && !(el && el.contains(e.target))) { e.preventDefault(); e.stopPropagation(); }
+  }
+  ['pointerdown','pointerup','mousedown','mouseup','click','dblclick'].forEach((t) => window.addEventListener(t, onGuardPointer, true));
+  window.addEventListener('keydown', onGuardKey, true);
+  // absorbClicks() 맨 앞:
+  guardRect = el.getBoundingClientRect(); guardUntil = Date.now() + CLICK_ABSORB_MS;
+  // releaseFocus()의 back.focus(...) 직후:
+  if (document.activeElement === back) keyGuardUntil = Date.now() + CLICK_ABSORB_MS;
   ```
-  immediately after unblock: popup.list count = 1 (memory/UI updated)
-  sync backend still has 222 right after unblock? => true   (쓰기 지연)
-  @120ms (popup likely closed): sync still has 222? => true  ← 아직 미기록
-  @720ms (popup stayed open):   sync still has 222? => false ← 500ms 후에야 기록
-  ```
-  즉 `unblock`은 메모리/UI는 즉시 갱신하나 실제 `sync.set`은 500ms 디바운스 flush에서만 호출된다.
-- **영향(major)**: 팝업은 **차단 해제의 유일 경로**(완전 숨김 설계). 사용자가 "차단 해제" 클릭(목록에서 사라짐 확인) 후 **~500ms 내 팝업을 닫으면** 브라우저가 미발화 `setTimeout`을 폐기 → `sync.set` 미호출 → 해제가 storage에 **영구 미반영**(메모리 맵은 팝업과 함께 소멸). 다음에 열어도/새로고침해도 여전히 차단 상태. UI는 성공처럼 보여 **조용한 의도 손실**. (PLAN의 "새로고침 후 반영"은 *가시성* 한계일 뿐, *영속화 손실*은 별개의 미의도 결함.)
-- **수정안(택1, 권장 순)**:
-  1. **store 자체 보호(권장, 계약 변경 불필요)**: 10-store.js가 `window.addEventListener('pagehide'/'visibilitychange→hidden', flushNow)` 등록 — flushNow는 디바운스 타이머를 즉시 비우고 `persist()`를 동기 호출(unload 동안 `sync.set` IPC 디스패치 → 영속). content(차단 직후 이탈, MINOR-2)도 함께 해결.
-  2. **flush API 추가(계약 v1.1, additive)**: `store.flush():Promise<void>` 노출 → popup `onUnblock`에서 `await store.unblock(uid); await store.flush();` 후 refresh. 문서 버전 올리고 재통지.
 
-### [MINOR-1] document_end 비동기 load 동안 차단 대상 깜빡임(FOUC)
-- **위치**: `99-main.js` 10–27행(`await store.load()` 후 `scan`), manifest `run_at: document_end`.
-- **영향**: `store.load()`가 `chrome.storage.sync` 비동기 read라, DOM 표시 후 스캔/숨김까지 수십 ms간 차단 대상이 잠깐 보일 수 있음. CSS 선차단은 차단 UID를 미리 알 수 없어 불가.
-- **판정**: 비동기 storage + 무빌드 구조의 **내재적 한계**. v1 수용 가능(향후 MutationObserver/onChanged TODO와 함께 완화 여지). 수정 강제 아님.
+### [정보] INFO-1(P11) — 변경 없음
+addedAt 동률 묶음 안에서 줄 자리가 바뀐다(저장 중 `1,3,4,2` → 해제됨 `2,1,3,4` → 복원 `1,3,4,2`). 외관만 바뀌는 문제다.
 
-### [MINOR-2] content 차단 직후 <500ms 내 페이지 이탈 시 동일 원인 유실
-- **위치**: MAJOR-1과 동일 근본 원인(디바운스 + 컨텍스트 teardown). `99-main.js` onBlock(34–38행).
-- **영향**: 우클릭 차단 직후 0.5초 내 링크 클릭/이탈 시 차단이 storage에 미반영될 수 있음. 단 페이지가 보통 유지되고 재차단이 쉬워 영향 작음.
-- **수정안**: MAJOR-1 수정안 #1(pagehide flush)로 동시 해결.
+### [정보] INFO-4(신규) — 토스트가 사라진 뒤에도 live 영역에 마지막 문구가 남음
+- 증거: S4 숨김 뒤 status 자식이 `두번째`다. 실제 확장 E7도 같다.
+- 영향: 화면 낭독기 가상 커서로 페이지 끝을 읽으면 지난 안내("○○ 님을 차단했습니다")가 남아 있다. 새 알림에는 영향이 없다.
+- 제안(선택): `hideNow` 뒤 충분히 지나서 `liveEl.textContent = ''`로 비운다. 비우는 변경은 기본 `aria-relevant`(additions text)에서 읽히지 않는다.
 
----
+### [정보] INFO-5 — 실제 낭독기 알림은 미검증
+접근성 트리 구조(지속 노드, polite, 문구 1회, `'' → 문구`)까지만 확인했다. CDP `nodesUpdated` 이벤트는 0건이었고, VoiceOver/NVDA 실제 낭독은 확인하지 못했다.
 
----
+### [정보] INFO-6(신규) — 후속 토스트가 없을 때, 키보드로 실행 취소한 뒤 0.5초 동안 Tab이 흐려진 버튼에 다시 들어감
+- 증거: S3에서 후속 토스트 없이 Enter를 누른 뒤 Tab을 누르면 `fmkb-toast-action`에 닿는다(visibility 지연 0.5초).
+- 실제 99-main 흐름은 항상 후속 토스트(성공 또는 오류)를 띄우고, 그때 버튼이 `[hidden]`이라 Tab이 닿지 않는다(S3 a3 PASS).
+- 후속 토스트가 없는 유일한 경로는 "저장 중 반대 동작이 이긴" 경우로, 매우 드물다. 다시 누르면 `action=null`이라 아무 일도 없다.
 
-## 재검증 — MAJOR-1 최종안 (내부 보강만, 계약 v1 유지) — ✅ RESOLVED
+### [정보] INFO-7(신규) — 링크에 포커스가 있을 때 마우스로 더블클릭하면 포커스가 BODY로 감
+- 첫 클릭 뒤 포커스는 원래 링크로 돌아간다.
+- 두 번째 mousedown은 포커스를 못 받는 흡수 토스트에 떨어지고, 브라우저 기본 동작으로 blur된다.
+- 링크 실행이나 페이지 클릭은 없다(S3d). 수정이 필요 없다.
 
-> **설계 변경 이력**: 초기에 storage-engineer가 `flush()` 공개(v1.1 additive)를 잠시 노출했으나, **team-lead 지침에 따라 최종안은 내부 보강만**으로 환원 — `store.flush()` 공개 API **제거**, 공개 표면 정확히 **6개**, 계약 `.claude/workspace/store-api-contract.md`는 **v1 유지**(C8 내구성은 *내부* 보장으로 기술).
-
-### 최종 수정 내용(검증한 현재 코드)
-- `src/content/10-store.js`: `registerUnloadFlush()`(197–211행, 356행 호출) — `window 'pagehide'` + `document 'visibilitychange'(hidden)`에서 **내부** `flushPending()` 호출 → 디바운스 타이머 비우고 `persistOnce()` 즉시 실행. **핵심**: `persistOnce`는 첫 `await` 전 동기 프리픽스에서 `chrome.storage.sync.set` IPC를 디스패치하므로 언로드 중 호출돼도 쓰기 발신(베스트에포트). **공개 `store` 객체엔 `flush` 멤버 없음**(`store.flush === undefined`). 재진입 가드 제거·`persist→persistOnce` 개명(디바운스 재예약으로 무손실).
-- **공개 API = 정확히 6개**: `{load, isBlocked, block, unblock, list, count}`. 계약 v1 6 시그니처 회귀 없음.
-
-### 재검증 결과 (node 실행)
-- **회귀 `/tmp/store_qa_test.js`: 25/25 유지** — 샤딩(최대 7113B≤8192, 총 49431B)·stale·멱등·C7 재시도 무회귀.
-- **`/tmp/store_final_test.js`: 15/15 PASS** (최종 설계 기준)
-  - **A 공개 API 표면**: `Object.keys(store)`=`{block,count,isBlocked,list,load,unblock}` 정확히 6, **`store.flush === undefined`**, pagehide·visibilitychange 리스너 등록 확인.
-  - **B pagehide 자동 flush(MAJOR-1)**: unblock 직후 디바운스 발화 전 `pagehide` → sync에서 222 **동기 제거**, reload로 영속 확정(111 유지).
-  - **C visibilitychange(hidden) 자동 flush(MINOR-2)**: 333 즉시 영속.
-  - **D 경계면 경합 안전성**: popup의 `if(typeof store.flush==='function')` 가드 패턴을 그대로 실행 → flush 부재 시 **throw 없이 스킵**, unblock 메모리 반영, 팝업 종료(pagehide) 시 **C8 자동 flush로 영속**(명시 flush 없이도 내구). **TypeError 없음 실증**.
-  - **E C7 재시도**: set 실패 주입에도 디바운스 재시도로 영속.
-- `node --check` store.js/popup.js 통과. 계약 v1 6 시그니처 불변 확인.
-
-> **MAJOR-1 RESOLVED(내부 보강).** 팝업 조기 종료/페이지 이탈에도 해제·차단이 sync에 보존됨(내부 자동 flush, 소비자 추가 호출 불필요). MINOR-2도 동일 수정에 흡수.
-
-### [CLEANUP-1] (minor) popup.js의 `store.flush` 참조 — ✅ RESOLVED
-- 경위: 중간 단계에서 popup이 가드된 `store.flush()`를 참조(죽은 코드, 크래시는 없었음).
-- **최종(team-lead 디스포지션 B)**: popup-engineer가 popup.js를 **v1으로 환원** — `onUnblock`(221–233행) = `store.unblock(String(it.uid))` → `refresh()`. **flush 호출/가드 전면 제거**.
-- **검증(현재 디스크 재독+grep)**: popup.js에 `store.flush` 토큰 **0건(코드·주석 모두)**. 호출 store 멤버 = `{load, list, count, unblock}` ⊆ 6 공개 API. `node --check` 통과. 내구성은 store 내부 C8 자동 flush 단독 보장(테스트 D: 무-flush onUnblock + pagehide → 영속 실증).
-
-### 최종 디스포지션 & 상태 (B = v1)
-- **store.js**: 공개 API 정확히 6개(`load/isBlocked/block/unblock/list/count`), `store.flush` 비노출, 내부 `flushPending` + `pagehide`/`visibilitychange(hidden)` 자동 flush(C8). 계약 `.claude/workspace/store-api-contract.md` = **v1 FROZEN**(6 시그니처, `bl_meta.ver=1`).
-- **popup.js**: store 호출 = `{load, list, count, unblock}`만, flush 미참조. 단일 출처(`../content/10-store.js`), storage 직접접근 0.
-- **MAJOR-1/MINOR-2 RESOLVED**: 영속 보장이 popup 명시 flush 없이 **store 자동 flush 단독**으로 성립(실증). 
-- **잔존(수용)**: MINOR-1(FOUC) — 비동기 storage 구조의 내재적 한계, v1 수용.
-
-> **최종 검증 결과: v1 MVP 통합 검증 GREEN. 미해결 차단 결함 0. 수용 항목 MINOR-1 1건.**
+### [정보] MINOR-7 — 변경 없음(직전 리포트 참고)
 
 ---
 
-## 검증 아티팩트(재현용)
-- `/tmp/store_qa_test.js` — store.js 샤딩/계약 node 검증(25/25, 회귀 유지)
-- `/tmp/dom_qa_test.js` — 실제 fmkorea HTML selectors+hide jsdom 검증(21/21)
-- `/tmp/popup_flush_test.js` — MAJOR-1 디바운스 유실 재현(수정 전 증거)
-- `/tmp/store_unload_test.js` — (중간 v1.1단계) pagehide/visibilitychange/flush()/동시성(23/23)
-- `/tmp/store_final_test.js` — **최종 v1** 재검증: 공개 6-API·`store.flush===undefined`·자동 flush·popup 무-flush 내구성(15/15)
-- `/tmp/store_persist_test.js` — **(2026-06-15 신규)** Task #3 영속화 경계 검증 하네스(resolve=영속화 확인). 시나리오 S1~S5 + 공개 6-API.
-- 라이브 HTML: `/tmp/list.html`(보드목록), `/tmp/doc.html`(게시글) — fmkorea HTTP 200 수신본
+## 미검증(통과 처리하지 않음)
+- 실제 화면 낭독기(VoiceOver/NVDA/TalkBack) 낭독: INFO-5, 팝업 `#fmkb-live` 포함.
+- 실기기 터치(Firefox Android)
+  - MINOR-2R2 터치 경로는 `pointer:coarse` CSS를 강제하고 마우스 클릭으로 재현했다. 실제 터치 탭의 이벤트 순서(touch → pointer → 호환 mouse → click)에서도 같은지는 재지 않았다.
+  - A2 흡수는 hit-testing 기반이라 이벤트 종류와 무관하다. rect 가드(수정안)는 pointer·mouse·click을 막는다. 사이트가 `touchstart/touchend`만으로 이동시키는 요소는 수정안의 rect 가드 밖이다.
+- 실 Chrome **툴바 팝업**(탭이 아닌 실제 팝업 창)의 포커스 동작. 이번에도 탭으로 연 같은 페이지에서 검증했다.
+- Firefox 실제 확장(설치형) 경로는 리더의 Selenium 31/31·30/30·5/5에 의존한다. 이번 `t_ff3.js`는 같은 CSS와 50-toast.js를 페이지에 직접 올린 검증이다.
+- 사이트 CSS가 `button{display:…!important}`로 `[hidden]` 방어를 무력화하는지. 외부 CSS 번들은 대조하지 않았다.
+- 샤딩 경계(8KB/100KB/stale/bl_meta). 저장 계층 diff가 없어 이번 범위에서 뺐다.
 
 ---
 
-## 재검증 #2 — block/unblock 즉시·awaitable 영속화 (Task #3) — 🟡 진행 중(BLOCKED: #1/#2 미완)
-
-> **검증 대상 결함**: 팝업에서 `store.unblock()` 후 새로고침 시 차단이 유지됨(영속화 누락).
-> **수정 설계(Task #1)**: `block`/`unblock` 의 **반환 Promise resolve 시점 = chrome.storage.sync 쓰기 완료(또는 동기 디스패치)**.
-> 메모리 즉시 반영(C3)은 유지하되, resolve 가 더 이상 디바운스에 의존하지 않게 한다. persist 재진입은 직렬화.
-
-### 현황(2026-06-15 시점)
-- Task #1(store 수정)·#2(popup 확인) **모두 pending** — storage-engineer가 아직 미적용. 디스크의 `10-store.js`는 **수정 전(디바운스) 코드**.
-- 따라서 최종 PASS 판정은 보류. 대신 **검증 하네스를 선제 구축**하고 **수정 전 베이스라인을 실측**해 결함을 재현·증거화함.
-
-### 수정 전 베이스라인 실측 — 결함 재현 확인 (`/tmp/store_persist_test.js`, 7 PASS / 7 FAIL)
-하네스는 `chrome.storage.sync` 를 mock 하고 실제 `10-store.js` 를 로드한다. **디바운스 500ms 를 의도적으로 기다리지 않고** `await block/unblock` 직후(매크로틱 1회만 flush) 디스크 상태를 검사 → "팝업 즉시 닫힘" 모사.
-
-증거(현재 디바운스 코드 기준):
-```
-S1: unblock resolve 직후(디바운스 대기 없이) 디스크에 222만 남음   → FAIL (onDisk=[])
-S2: block 후 bl_0 존재                                              → FAIL (resolve 시점 미기록)
-S3: 연사 후 디스크 = {3,4}                                          → FAIL (onDisk=[])
-S4: 다수 청크 생성됨(>1)                                            → FAIL (chunks=0)
-S5: pagehide 후 p1 이 디스크에 반영                                 → PASS (안전망만 동작)
-API: 정확히 6개 / store.flush 미노출                                → PASS (표면 불변)
-```
-- **해석**: 현재 `block`/`unblock`은 `schedulePersist()`(500ms 타이머) 후 `return Promise.resolve()` → **resolve 시점에 sync 쓰기가 전혀 디스패치되지 않음**(`10-store.js:317-318, 328-329`). 팝업이 unblock 직후 닫히면 미발화 타이머가 폐기되어 유실. S5만 PASS인 이유는 pagehide 안전망(C8)이 별도 동기 flush를 하기 때문.
-- 이 7개 FAIL은 **결함의 정확한 재현**이며, Task #1 수정 후 **S1~S4가 PASS로 전환**되어야 한다(=resolve가 영속화 완료를 보장). API 3건은 수정 후에도 PASS 유지 필요.
-
-### 수정 후 통과 기준(Task #1/#2 완료 시 즉시 재실행)
-1. **핵심 회귀 방지**: S1(unblock 즉시 닫힘 → 디스크 반영), S2(마지막 1명 → bl_0 remove → 재load 빈 목록) PASS.
-2. **재진입/경쟁 직렬화**: S3(무-await 연사 6회 후 디스크/재load = {3,4}) PASS — persistedChunks 일관성·stale remove 정확.
-3. **샤딩 경계 무회귀**: S4(다수 청크 → 대량 해제 → bl_0만, 인덱스 연속) PASS + 기존 `/tmp/store_qa_test.js` 25/25 유지.
-4. **content 경계(99-main.js)**: `await store.block/unblock` 후 `hideByUid`/`unhideByUid` 순서 — resolve 타이밍 변화로 숨김/복구 회귀 없는지(코드 흐름 + 정적). 시그니처 6 API 불변.
-5. **store↔popup 계약**: `list()` 필드 `uid/nick/addedAt` 불변, popup `onUnblock`(popup.js:230) 무변경 수혜 확인.
-
-### 미검증(통과 처리 금지) — [수정 도착 후 갱신: 아래 "수정 후 결과" 참조]
-- ~~위 모든 수정 후 검증 항목~~ → **수정 코드(10-store.js mtime 16:35) 도착 후 전수 검증 완료(아래).**
-- 실브라우저 MV3 팝업 강제 종료 타이밍(노드 mock의 한계) — 코드 흐름으로 입증. 잔여 위험은 "잔여 리스크" 항에 명시.
-
----
-
-### ✅ 수정 후 결과 — block/unblock 즉시·awaitable 영속화 (2026-06-15) — **PASS (28/28)**
-
-storage-engineer가 Task #1을 완료(`src/content/10-store.js` mtime 16:35). 수정 코드 직접 재독 + 하네스 재실행으로 전수 검증.
-
-#### 적용된 수정(검증한 현재 코드)
-- `block`(10-store.js:348-358): 메모리 갱신 후 `return flushPending()` — 반환 Promise가 `persistOnce` 완료 후 resolve. 디바운스 의존 제거.
-- `unblock`(10-store.js:367-371): `if (map.delete(uid)) return flushPending(); return Promise.resolve();`(no-op은 즉시 resolve).
-- **직렬화** `persistNow`(10-store.js:188-208): `persistInFlight` 체인 + `persistDirty` coalesce. in-flight 중 도착한 호출은 새 persist를 띄우지 않고 체인 꼬리를 반환하며, 종료 후 dirty면 `do/while`로 1회 더 실행 → 최신 메모리 반영. **재진입 경쟁으로 인한 persistedChunks 꼬임 없음**.
-- 디바운스(`schedulePersist`→`persistNow`)·pagehide/visibilitychange 안전망(C8) **유지**(다른 이탈 경로 대비).
-- 공개 API **정확히 6개** 유지, `store.flush === undefined`. 계약 v1 6 시그니처(`Promise<void>`) 불변.
-- 계약 문서 갱신 확인: C3에 "반환 Promise는 sync 쓰기 완료 시 resolve" 명시, block/unblock JSDoc·변경이력(2026-06-15, storage-engineer) 반영.
-
-#### 실측 — `/tmp/store_persist_test.js` **28 PASS / 0 FAIL** (node v25)
-| # | 시나리오 | 결과 |
-|---|----------|------|
-| S1 | block 2 → unblock 1 → "팝업 즉시 닫힘"(await만, 디바운스 미대기) → 디스크에 222만 | PASS |
-| S2 | 마지막 1명 unblock → `bl_0` remove → 재load 빈 목록 | PASS |
-| S3 | 무-await 연사 6회(block/unblock 혼합) → 디스크·재load = {3,4} | PASS |
-| S4 | 120명(긴닉 다수 청크) → 119 해제 → `bl_0`만(인덱스 연속) → 재load 1명 | PASS |
-| S5 | pagehide 안전망 — 보류 쓰기 동기 flush | PASS |
-| S6 | 직렬화 스트레스(60 block + 30 unblock 무-await) → settle 후 **디스크==메모리**, 청크 인덱스 연속, 재load 일치 | PASS |
-| **S7** | **coalesce 정확성** — A persist in-flight 중 도착한 B의 Promise가 **"B 영속 후" resolve**(b2·a1 모두 디스크), in-flight 중 도착한 unblock도 "삭제 영속 후" resolve | PASS |
-| S8 | 무-await 교차 alternation(팝업 빠른 연타: z를 block↔unblock 반복) → 최종 상태만 디스크 반영, 재load 일치 | PASS |
-| S9 | C7 레이트리밋/실패 내성 — `set` 2회 실패 주입에도 `block` throw 안 함, 메모리 유지, 디바운스 재시도로 영속 | PASS |
-| API | `Object.keys(store)`=6, `store.flush===undefined` | PASS |
-
-추가 회귀:
-- 기존 샤딩 회귀 `/tmp/store_qa_test.js` **25/25 유지**(8KB/100KB·stale·멱등·C7).
-- `node --check` store.js / popup.js 통과.
-
-#### 1) 핵심 회귀 방지 — PASS
-S1/S2가 입증: `await store.unblock(uid)` resolve 시점에 이미 `sync.set`/`remove`가 디스패치·완료됨. **팝업이 unblock 직후 즉시 닫혀도(추가 시간 0) 유실 없음**. 마지막 1명 해제 시 `bl_0`가 정확히 `remove`되어 재load가 빈 목록(영속화 누락 버그 해소). 수정 전 베이스라인에서 FAIL이던 S1~S4가 전부 PASS로 전환.
-
-#### 2) 재진입/경쟁 직렬화 — PASS
-S3/S6/S7/S8이 입증: `persistNow`의 in-flight 체인 + coalesce로 연속 호출이 겹쳐도 `persistedChunks` 스냅샷이 일관(diff 기반 변경분 set, stale remove 정확). **in-flight 중 도착한 변경의 반환 Promise는 그 변경이 영속된 뒤 resolve**(S7) — "resolve=영속 완료" 계약이 동시성 하에서도 성립. 60+30 무-await 스트레스에서 디스크==메모리, 청크 인덱스 연속(유령 키 없음).
-
-#### 3) content 경계(99-main.js) — PASS (코드 흐름 + 정적)
-- `onBlock`(99-main.js:34-37): `await store.block` → `NS.hide.hideByUid(uid)` → toast. `onUnblock`(40-43): `await store.unblock` → `unhideByUid` → toast. **호출 순서 불변**.
-- `hide.hideByUid/unhideByUid`는 **store 비의존**(30-hide.js:2 주석·정의 21/31행) — uid로 DOM을 직접 조작, store 상태를 재조회하지 않음. `scan`은 최초 1회 주입 `isBlocked`만 사용(42행).
-- **resolve 타이밍 변화의 영향**: 숨김/복구가 이제 메모리 갱신 직후가 아니라 **sync 쓰기 완료 후** 실행됨(노드 mock 기준 +1 매크로틱, 실브라우저 기준 storage IPC 수 ms). 메모리는 await 이전(동기, block 354행/unblock 369행 `map.delete`)에 이미 갱신되므로 **숨김/복구 정확성 무관**. 회귀 없음(미세 지연만, 무해·오히려 영속 보장).
-
-#### 4) 경계면 계약 교차 비교 — PASS
-- **store↔content**: `await store.load()`·`isBlocked(uid)`·`await store.block(uid,nick)`·`await store.unblock(uid)` 시그니처 전부 불변(6 API). uid 문자열 일치.
-- **store↔popup**: `list()` 반환 `{uid,nick,addedAt}` 필드 불변(popup.js:154/166/168 소비). `count()`·`load()`·`unblock()` 불변.
-
-#### 5) 샤딩 경계(8KB/100KB) — PASS
-S4/S6 + 기존 25/25 회귀로 청크 8KB·총 100KB·stale remove·`bl_meta` 로직 무회귀 확인.
-
-#### store↔popup 자동 수혜(Task #2 영역, QA 관점 독립 확인)
-popup `onUnblock`(popup.js:230) = `Promise.resolve(store.unblock(String(it.uid))).then(refresh)`. **코드 변경 없이 자동 수혜**: `store.unblock`이 이제 sync 쓰기 완료 후 resolve하므로, `.then(refresh)`가 도는 시점엔 이미 영속됨 → 팝업이 곧장 닫혀도 유실 없음. (Task #2 정식 확인은 popup-engineer 담당이나, QA 교차 검증상 회귀·계약 위반 없음.)
-
-#### 잔여 리스크(미검증/한계 — 명시)
-- **실브라우저 MV3 팝업 강제 종료**: 노드 mock은 `sync.set` 콜백을 `setTimeout(…,0)`로 모사. 실제 크롬은 `set` 호출 시 **동기적으로 IPC를 디스패치**하므로 await 완료 = 발신 완료가 더 강하게 성립하나, OS/브라우저가 IPC 전송 직전 프로세스를 강제 종료하는 극단 케이스는 노드로 재현 불가 → **코드 흐름으로 입증, 베스트에포트**. C8(pagehide/visibilitychange) 안전망이 추가 방어선으로 잔존. 이 잔여 위험은 v1 수용 가능(기존 디바운스 설계 대비 대폭 개선).
-- **레이트리밋 즉시쓰기 전환 영향**: 즉시쓰기로 수동 차단/해제마다 1회 set. 수동 빈도(분당 수 회)에선 분당 120 한도 무해. 초과 시 C7 경로(S9 실증)로 폴백. 단, **자동화/대량 가져오기(미래 TODO)** 시엔 디바운스 배칭이 사라져 한도 압박 가능 → 향후 import 기능 추가 시 배치 쓰기 별도 고려 필요(현 v1 범위 밖, minor 메모).
-
-> **재검증 #2 판정: PASS (28/28 + 회귀 25/25).** 영속화 누락 버그 RESOLVED. block/unblock의 "resolve=sync 영속 완료" 계약이 단일 호출·동시성·실패 폴백 전반에서 성립. 공개 6-API·샤딩·content/popup 경계 무회귀. blocker/major **0건**. minor 메모 1건(미래 대량쓰기 레이트리밋, v1 범위 밖). 잔여 리스크(실브라우저 강제 종료 극단 케이스)는 코드 흐름 입증 + C8 안전망으로 수용.
-
-### 검증 아티팩트 추가
-- `/tmp/store_persist_test.js` — **28/28**: S1~S9(즉시영속·직렬화·coalesce·alternation·C7) + 공개 6-API. chrome.storage.sync mock + 실제 10-store.js 로드.
-
----
-
-## 재검증 #3 — 라이브 동기(C9) `chrome.storage.onChanged` 정적·경계면 검증 (2026-06-15, Task: onChange)
-
-- 담당: extension-qa
-- 범위: 가산적 7번째 API `onChange(cb)->unsubscribe` + `rebuildFromStorage` 추출 + onChanged 리스너 + 단일 직렬화 큐(`serialTail`/`enqueueSerial`) + content(99-main)·popup(popup.js) 배선
-- 방법: **정적 정합성 + 경계면 교차 비교만** 수행. 다중 컨텍스트(탭↔팝업 onChanged 전파) 런타임 동작은 Node mock이 실 Chrome 직렬화·다중 컨텍스트를 재현 못 하므로 **"실브라우저 검증 필요(미검증)"로 명시**(MEMORY 교훈: mock 거짓 PASS 전례).
-- 판정: **blocker 0 / major 0 / minor 0.** 정적·경계면 전 항목 PASS. 다중 컨텍스트 라이브 전파는 미검증(아래 명시).
-
-### V1. 문법 검사 — PASS
-`node --check` 통과: `10-store.js`, `99-main.js`, `popup.js`, `30-hide.js` 모두 OK.
-
-### V2. 정적 정합성: manifest js ↔ 실제 파일 7개 — PASS
-- `manifest.json` `content_scripts[0].js` 7개 항목 ↔ `src/content/*.js` 7개 파일 1:1 실재 확인(00-namespace,10-store,20-selectors,30-hide,40-contextmenu,50-toast,99-main). MISS 0.
-- 로드 순서: `10-store.js`가 소비자(99-main:51)보다 앞. `00-namespace.js`(NS.hide 등 상수/네임스페이스 정의)가 30-hide·99-main보다 앞. onChange 추가로 깨진 참조 없음.
-- `src/content.css`(manifest css), `src/popup/popup.html`(action.default_popup) 실재.
-- popup.html: `<script src="../content/10-store.js">`(41행) → `<script src="popup.js">`(42행) 순서 — popup이 store를 소비자보다 먼저 로드(단일 출처, 사본 금지 준수).
-
-### V3. 경계면 — onChange 계약 일치 — PASS
-**store 정의(10-store.js:511-518)**: `onChange: function (cb)` → `typeof cb !== 'function'`이면 no-op unsub 반환, 아니면 `changeSubscribers.push(cb)` 후 `unsubscribe()` 반환. 콜백 인자 = `applyExternalChange`(98-118)가 만든 `{ added: string[], removed: string[] }`(uid 문자열 배열).
-
-- **content 소비(99-main.js:51-56)**: `if (typeof store.onChange === 'function')` 가드 후 `store.onChange((d) => { d.added.forEach(uid => NS.hide.hideByUid(uid)); d.removed.forEach(uid => NS.hide.unhideByUid(uid)); })`. → `d.added`/`d.removed`가 string[]라는 store 출력과 정확히 일치. uid를 문자열 그대로 hide 함수에 전달(XSS 무관 — innerHTML 미사용). **일치.**
-- **popup 소비(popup.js:301-305)**: `if (typeof store.onChange === 'function')` 가드 후 `store.onChange(function () { refresh(); })`. diff 인자 미사용 — `refresh()`가 `store.list()`/`count()` 전체 재조회로 일괄 갱신. store 계약상 콜백 무인자 호출도 안전(자바스크립트 인자 무시). **일치.**
-- 반환값 `unsubscribe`: content는 단일 페이지 생명주기라 미보관(페이지 언로드 시 컨텍스트 GC), popup도 단수명이라 미보관 — 둘 다 누수 아님(주석에 근거 명시 popup.js:294-295). 계약상 unsubscribe는 선택 사용.
-
-### V4. 경계면 — NS.hide.hideByUid / unhideByUid 존재·시그니처 — PASS
-- `hideByUid(uid)` 정의: 30-hide.js:31 — `AUTHOR_ANCHOR_SELECTOR` 전체 훑어 `extractUid(anchor) === uid`인 앵커의 컨테이너 숨김. 인자 = uid 문자열. **존재·시그니처 일치.**
-- `unhideByUid(uid)` 정의: 30-hide.js:21 — `.fmkb-hidden[data-fmkb-uid="<uid>"]` 셀렉터로 복구. 인자 = uid 문자열. **존재·시그니처 일치.**
-- 호출처 4곳(99-main.js:36,42,53,54) 모두 uid 문자열 전달. onChange 신규 배선(53,54)이 기존 우클릭 배선(36,42)과 **동일 함수·동일 시그니처 재사용** — 신규 표면 없음, 회귀 위험 낮음.
-- 주의(설계상 한계, 버그 아님): `hideByUid`/`unhideByUid`는 **현재 DOM에만** 작용. AJAX/무한스크롤 신규 노드는 onChange로 즉시 반영 안 됨(MutationObserver는 별개 TODO) — 계약·주석에 명시됨(99-main.js:50). v1 수용.
-
-### V5. popup refresh() onChange 콜백 재사용 안전성 — PASS
-- `refresh()`(popup.js:247-258): `store.list()` try/catch → `allItems` 갱신 → `updateCount()` → `render()`. 부수효과는 화면 갱신뿐(스토리지 쓰기 없음). onChange 콜백에서 반복 호출돼도 멱등·안전.
-- **중복 갱신 없음**: 팝업 자신의 `onUnblock`은 자기-쓰기 → store가 빈 diff로 콜백 미호출(V7). 따라서 `onUnblock`의 `.then(refresh)`(popup.js:237)와 onChange의 `refresh()`가 동시 발화하지 않음. 외부 변경시에만 onChange→refresh.
-- 구독 등록은 `init`의 `load().then(...)` 안에서 **1회만**(popup.js:301). init 자체가 DOMContentLoaded/즉시 1회 실행 → 중복 구독 없음.
-
-### V6. 기존 6 API FROZEN — PASS (회귀 없음)
-- 시그니처 6개 모두 보존: `load()`(425) `isBlocked(uid)`(436) `block(uid,nick)`(449) `unblock(uid)`(468) `list()`(478) `count()`(491). onChange는 7번째로 **추가만**(가산적).
-- `list()` 반환 필드 `{uid, nick, addedAt}`(481) desc 정렬·복사본 — 종전과 동일.
-- `block`/`unblock`은 여전히 `flushPending()`(=`persistNow`) 반환 → C3(즉시·awaitable 영속화) 불변. 리팩터(rebuildFromStorage 추출)가 block/unblock 경로를 건드리지 않음.
-
-### V7. 에코/자기-쓰기 무한루프 차단 — PASS (정적 논증)
-- `applyExternalChange`(98-118): rebuild **전** `before = new Set(map.keys())` 스냅샷 → `rebuildFromStorage()`로 map 교체 → `after = map`. before↔after **키셋 diff**만 added/removed로 산출. `if (added.length===0 && removed.length===0) return;`(114) → 자기-쓰기 에코(자신의 persist가 유발한 onChanged)는 디스크 키셋이 메모리와 동일하므로 빈 diff → **콜백 미호출(no-op)**.
-- onChanged 핸들러(142-152)는 `rebuildFromStorage`(읽기 전용, 절대 sync write 안 함)만 호출 → **피드백 루프 구조적 부재**. enqueueSerial로 persist와 같은 큐에서 순차 실행 → 인터리브 없음(rebuild는 진행 중 로컬 write 커밋 뒤 실행).
-- ⚠️ 단, "빈 diff = no-op"이 **실제로 성립하려면** 자기-쓰기 후 디스크에서 읽은 청크가 메모리 키셋과 정확히 같아야 한다. **키셋(uid 집합) 기준**이므로 nick/값 변경·청크 직렬화 차이가 있어도 키 추가/삭제가 없으면 안전. 이 로직은 정적으로 타당하나, **실 Chrome onChanged 전파 타이밍·직렬화 차이에서의 최종 무한루프 부재는 실브라우저 검증 필요(미검증, 아래)**.
-
-### V8. 리스너 생명주기 — PASS (정적), 다중 컨텍스트 전파는 미검증
-- **단일 등록**: store.js 모듈 IIFE는 line 35 `if (root.FMKBlind.store) return;`(중복 주입 가드)가 line 522 `installOnChangedListener()`·line 524 store 노출보다 **먼저** 실행됨. 따라서 한 컨텍스트에 store.js가 두 번 주입돼도 두 번째는 line 35에서 조기 반환 → `onChanged.addListener`는 컨텍스트당 **정확히 1회**.
-- **존재 가드**: `installOnChangedListener`(137-141)가 `chrome.storage.onChanged.addListener`의 typeof를 확인 후에만 등록 → 미지원 컨텍스트에서 안전(라이브 동기만 비활성, load 시점 동기화는 유효). 실제 `.addListener(` 호출은 142행 **1곳뿐**(139행은 typeof 가드).
-- **영역 필터**: 리스너가 `areaName !== 'sync'` 조기 반환 + `bl_meta`/`/^bl_\d+$/` 키만 relevant 처리(143-149) → 무관 키 변경에 rebuild 안 함.
-- ⚠️ **미검증(실브라우저 필요)**: content 탭 ↔ popup 간 onChanged **실제 전파**, 자기-쓰기 에코가 실 Chrome 직렬화에서 정말 빈 diff인지, 외부 변경이 열린 탭에 새로고침 없이 반영되는지는 **Node mock으로 거짓 PASS 전례**가 있어 정적 검증으로 단정 불가. → **실브라우저 콘솔 검증 필요.**
-
-### V9. 샤딩 경계 무결 — PASS
-- `rebuildFromStorage` 추출(346-406)은 기존 `load`의 복원 로직을 **함수로 뽑은 것**일 뿐: 8KB(`CHUNK_BUDGET=7168`)·100KB(`TOTAL_BUDGET=102400`)·`QUOTA_WARN` 상수 불변, `buildChunks`(206)·`persistOnce`(230)의 청크 diff(`persistedChunks[i] !== newVals[i]`)·stale remove(252)·`bl_meta` 복원(405) 로직 변경 없음.
-- `doLoad`(409-415)는 이제 `rebuildFromStorage()` 위임 — 동작 동일(멱등 load는 store.load의 loadPromise 가드 426으로 유지).
-- onChanged 경로의 rebuild가 `persistedChunks`를 디스크 권위로 리셋(393-404) → 계약 I2 해소 근거(외부 해제 후 로컬 block이 stale 청크 되쓰지 않음). 이 또한 정적 논증 — 실 직렬화 동등성은 실브라우저 판정.
-
-### 재검증 #3 미검증 항목(통과 처리 금지 — 명시)
-- **다중 컨텍스트 라이브 전파(탭↔팝업↔다른 기기)**: onChanged 실제 발화·전파 타이밍, 자기-쓰기 에코의 실 Chrome 빈-diff 성립, 외부 변경의 새로고침-없는 DOM 반영 — **전부 실브라우저 콘솔 검증 필요.** Node mock은 실 Chrome 직렬화·다중 컨텍스트를 재현 못 해 과거 resurrection 버그에 거짓 PASS를 준 전례 있음(CLAUDE.md/MEMORY). **정적·경계면만 PASS이며, 라이브 동기 "정상"은 단정하지 않음.**
-
-> **재검증 #3 판정: 정적·경계면 PASS, blocker/major/minor 0건.** onChange는 가산적·비파괴로 6 API FROZEN 무회귀, content/popup 소비가 시그니처 일치, hide 함수 재사용 정합, 리스너 컨텍스트당 1회·존재 가드 안전, 에코/피드백 루프 구조적 부재. **단, 다중 컨텍스트 onChanged 전파·에코 무해성·새로고침-없는 반영은 실브라우저 검증 필요(미검증).**
-
----
-
-## 재검증 #4 — MutationObserver 증분 처리(TODO Q6) (2026-07-08, branch `feat/mutation-observer-incremental`)
-
-- 담당: extension-qa · 방법론: `extension-qa-verification`(경계면 교차 비교 + Node 하네스 + 라이브 셀렉터)
-- 변경 범위(`git diff main`): 신규 `src/content/35-observer.js`(untracked, 84행), `src/content/99-main.js` 배선(+7행), `manifest.json`(js 목록에 35-observer 추가, ver `0.3.0`→`0.4.0`), 문서(PLAN/README/TODO).
-- **store.js·store-api-contract.md diff 0(불변 확인) — 저장 계약 미변경.** `git diff main -- src/content/10-store.js .claude/workspace/store-api-contract.md` = 빈 출력.
-
-### 판정 요약
-
-| 검증 영역 | 상태 |
-|----------|------|
-| 1. 경계면 계약(35-observer 소비 API ↔ 00/20/30 정의, 99-main 배선) | ✅ **PASS** |
-| 2. manifest 정합성(파일 실존·로드 순서·ver 0.4.0) | ✅ **PASS** |
-| 3. 로직 검증(Node 하네스 A 격리 17 + B 통합 11 = 28 assert) | ✅ **PASS** |
-| 4. 엣지 케이스(body 폴백/스캔-관찰 경계/컨테이너·앵커 혼재) | ✅ **PASS** |
-| 5. 라이브 셀렉터(오늘자 fmkorea HTML) | ✅ **PASS** |
-| 6. 실 Chrome MutationObserver 타이밍·AJAX 실사이트 동작 | ⚠️ **미검증(실브라우저 게이트)** |
-
-> **재검증 #4 판정: 정적·경계면·Node 하네스 PASS, blocker/major/minor 0건.** 관찰: OBS-1(성능, 실브라우저 확인 권장). **실 Chrome 관찰자 타이밍·AJAX 삽입 실동작은 미검증 — 아래 실브라우저 체크리스트 필수.**
-
-### 1. 경계면 계약 — PASS (양쪽 파일 대조)
-35-observer가 소비하는 심볼을 정의처와 1:1 대조(모두 존재·시그니처 일치):
-- `NS.AUTHOR_ANCHOR_SELECTOR`(35:36,42 소비) ↔ 00-namespace.js:18 정의 `'a[class*="member_"]'`. ✔
-- `NS.MENU_ID`/`NS.TOAST_ID`(35:16 소비) ↔ 00-namespace.js:23,24 정의(`'fmkb-context-menu'`/`'fmkb-toast'`). ✔ 실 삽입부(40-contextmenu.js:21,42·50-toast.js:20,22)가 **최상위 노드로 body에 append** → 35의 top-level `isOwnUiNode` 체크와 정합(래핑 없음). ✔
-- `NS.selectors.extractUid(anchor)`(35:22 소비) ↔ 20-selectors.js:20 정의(인자=anchor, 반환=uid문자열|null). ✔
-- `NS.hide.hideForAnchor(anchor, uid)`(35:25 소비) ↔ 30-hide.js:12 정의(인자=(anchor,uid), 반환=bool). ✔
-- **99-main 배선 일치**: 99-main.js:33 `NS.observer.install({ isBlocked: (uid)=>store.isBlocked(uid) })` ↔ 35-observer.js:53 `install(handlers)`가 `handlers.isBlocked`를 함수로 소비(55). shape 일치. ✔ `store.isBlocked`는 기존 6 API(계약 불변)로 재사용 — 신규 store 표면 0.
-
-### 2. manifest 정합성 — PASS
-- js 배열 8개 파일 전부 실존(`for f in ...; test -f`로 확인): 00·10·20·30·**35**·40·50·99. ✔
-- 로드 순서 `00→10→20→30→35→40→50→99`: 35는 20(NS.selectors)·30(NS.hide) **이후**, 00(상수) 이후. ✔ 단, 35 IIFE 본문은 로드 시점에 `NS`만 참조(라인 8-9)하고 selectors/hide/상수는 전부 **콜백 실행 시점**에 참조 → 로드 순서 위반해도 즉시 깨지진 않으나, 현 순서가 의존성과 정합해 안전. ✔
-- `manifest_version:3`, `permissions:["storage"]`(host_permissions/scripting/tabs 없음), `matches:["https://www.fmkorea.com/*"]`, `default_popup:src/popup/popup.html`(실존), `version:"0.4.0"`. ✔ MutationObserver는 **추가 권한 불요**(표준 DOM API) — 최소권한 유지. ✔
-
-### 3. 로직 검증(Node 하네스) — PASS (28/28)
-`vm`로 실제 파일을 로드해 구동. 산출물: 하단 아티팩트.
-- **하네스 A(35 격리, stub NS)** 17/17: install→관찰옵션 `{childList:true,subtree:true}`만(attributes/characterData 미관찰=재귀가드) · (a)자기앵커 차단→hideForAnchor · (b)하위앵커 순회(차단2/비차단1 정확) · (c)비Element·메뉴·토스트 스킵 · (d)중복 install no-op(생성자 1회) · (e)isBlocked=false 미숨김 · (f)UID없음 스킵 · (g)isBlocked 미주입·(i)타깃 부재 안전미설치 · (h)body부재→documentElement 폴백 · (j)컨테이너+후행 형제앵커 동시 처리 · (k)disconnect후 재install · (l)자기앵커+하위앵커 동시.
-- **하네스 B(00/20/30/35 통합, fake DOM)** 11/11: 실 `extractUid`+`hideForAnchor`+`findContainer(closest)` 재사용 경로로 — AJAX 삽입 `li[id=comment_777] > a.member_123456` 차단 컨테이너 숨김·`data-fmkb-uid` 표식 · 비차단 댓글 미숨김 · 보드목록 `<tr>` 행 `closest('tr,li')` 숨김 · `member_plate`(비숫자 토큰) 미숨김(토큰-앵커드) · 회귀: `hide.scan`/`unhideByUid` 정상.
-
-### 4. 엣지 케이스 — PASS
-- **body 부재 폴백**: 35:58 `document.body || document.documentElement`, 59 둘 다 없으면 안전 미설치. 하네스 A(h)(i)로 확인. document_end 실행이라 통상 body 존재. ✔
-- **스캔↔관찰 경계 명확**: 99-main 흐름 = ①`hide.scan`(27, 관찰 전 존재 노드 책임) → ②`observer.install`(33, 이후 삽입 노드 책임). **두 단계 사이 await 없음(동기)** → 스캔·설치 틈에 DOM 삽입 불가 → 누락 경계 없음(TOCTOU 부재). 35 헤더 주석(3-4행)·99-main 주석(29-31)이 "최초 스캔 이후 삽입 노드"로 책임 분리 명시. ✔
-- **컨테이너 단위 삽입(앵커가 컨테이너보다 나중/함께)**: `handleAddedNode`가 addedNodes를 인덱스 순회, 각 노드에 (a)자신 매칭+(b)하위 querySelectorAll 둘 다 수행 → 순서 무관 처리. 하네스 A(j)(l)로 확인. ✔
-- **재귀 가드**: 숨김은 class·dataset 토글(=attribute 변경)인데 관찰은 childList만 → 자기 트리거 무한루프 부재(35:49-51 주석 + 하네스 A 관찰옵션 assert). ✔
-
-### 5. 라이브 셀렉터 재검증 — PASS (오늘자 fmkorea, 2026-07-08)
-`curl`로 실 HTML 수신(UA=Chrome/120). 증분 삽입 노드도 동일 마크업을 지님을 전제하므로 최초 스캔과 같은 셀렉터 유효성 확인:
-- 목록(`mid=humor`, http 200, 76KB): `member_[0-9]+` 앵커 **고유 20개** → `a[class*="member_"]` 유효, `member_(\d+)` UID 추출 유효(9~11자리 가변 길이도 `\d+`로 흡수). ✔
-- 게시글(`/1598251840`, http 200, 155KB): `id="comment_[0-9]+"` 댓글 li **21개**(+`comment_best` 존재) → `li[id^="comment_"]`·베스트댓글 유효. `.rd`(`class="rd rd_nav_style2 clear"`)·`.rd_hd`·`.top_area` 존재 → 게시글 컨테이너 판정 유효. ✔
-
-### 발견/관찰 사항
-- **[OBS-1] (minor·성능, 실브라우저 확인 권장)** `observe(target, {childList:true, subtree:true})`가 document 전역이라 **모든 하위 노드 삽입**(광고/트래킹/스크립트 포함)마다 콜백이 돌고, 각 addedNode 서브트리에 `querySelectorAll('a[class*="member_"]')`를 수행한다. 디바운스/throttle·requestIdleCallback 없음. fmkorea 정도 트래픽에선 통상 무해하나, 광고 삽입이 잦은 페이지에서의 CPU/jank는 **정적으로 단정 불가 → 실브라우저에서 프로파일 관찰 권장**. 기능 정확성 결함 아님(=minor 관찰).
-- blocker/major 결함 **0건**. 신규 store 표면 0(계약 불변), 신규 권한 0(표준 DOM API).
-
-### 미검증(통과 처리 금지 — 명시) · 실브라우저 게이트
-이 프로젝트는 **Node mock 거짓 PASS 전례**(resurrection 버그, MEMORY/CLAUDE.md)가 있다. 아래는 mock으로 재현 불가:
-1. **실 Chrome MutationObserver 발화 타이밍/배치**: 여러 삽입이 마이크로태스크로 배치돼 한 records[]로 오는 경우의 실제 처리(하네스는 콜백을 직접 호출해 흉내만 냄).
-2. **fmkorea AJAX 실동작**: 댓글 작성/더보기/무한스크롤 시 실제 DOM 삽입이 `addedNodes`로 오는지(vs innerHTML 치환/문서프래그먼트) — 실사이트에서만 확정. 정적 커버(하네스 B에서 컨테이너/앵커 양형태 처리)로 논리적 대비는 됐으나 실동작 미확인.
-3. **성능(OBS-1)**: 광고 잦은 실페이지에서 관찰자 콜백 부하/jank.
-
-**실브라우저 체크리스트(머지 전 게이트):**
-- [ ] 차단 유저가 쓴 댓글이 있는 게시글에서 "더보기/새 댓글" AJAX 로드 시 새 댓글이 **즉시 숨김**되는가(새로고침 없이).
-- [ ] 무한스크롤/페이지네이션 AJAX로 목록 행 추가 시 차단 유저 행이 즉시 숨김되는가.
-- [ ] 우클릭 차단 직후, 같은 유저의 **이후 삽입** 노드도 숨김되는가(삽입 시점 최신 isBlocked 참조 확인).
-- [ ] 콘솔 에러/무한루프 없이 동작, 페이지 스크롤/입력에 체감 jank 없는가(OBS-1).
-- [ ] 우클릭 메뉴/토스트 자체가 관찰자에 의해 오작동하지 않는가(isOwnUiNode 스킵 실동작).
-
----
-
-## 재검증 — 내보내기/가져오기(TODO Q7, `importMany` C10) — 2026-07-08 · 브랜치 `feat/export-import` — **PASS**
-
-**범위:** `git diff main` — `src/content/10-store.js`(가산 8번째 API `importMany`), `src/popup/popup.{html,js,css}`(내보내기/가져오기 UI), 계약 §2/C10/§4, 문서(TODO/PLAN/README/DEPLOY), `manifest.json` ver 0.5.0. content script 파일 무변경.
-**방법론:** extension-qa-verification(경계면 교차 비교 + 독립 Node 하네스). **결과: blocker/major 0건. 독립 하네스 38/38 PASS.**
-
-### 1. 경계면 계약 교차 비교 — PASS
-- **popup.js ↔ 10-store.js `importMany`**: popup(`onImportFileChosen`, popup.js:428-437)이 `store.importMany(entries)`를 호출하고 반환을 `Promise.resolve(...).then(r => { r.added/skipped/invalid })`로 소비. store 구현(10-store.js:623-667)은 `{added,skipped,invalid}` 객체를 resolve. **shape 일치.** ✔
-- **관용 추출(계약 §4) ↔ popup `extractEntries`**(popup.js:369-376): bare 배열 / `{entries}` / `{items}` 수용, 그 외 `null`. 계약 §4 예시(entries·bare·items 관용 수용)와 정확히 일치. ✔
-- **6+1 API FROZEN 불변**: 10-store.js diff는 헤더 주석 + `importMany` **추가만**(load/isBlocked/block/unblock/list/count/onChange 본문 무변경). content 소비자(99-main.js: load·isBlocked·block·unblock·onChange만 사용, 35/30/40은 store 비의존)에 영향 0. `grep`로 확인. ✔
-- **새 쓰기 경로 없음**: `importMany`는 line 666에서 `flushPending()` 호출 — block(537)·unblock(549)과 **동일 경로**. 별도 syncSet 없음(계약 C10 "기존 flushPending()/persist 경로 재사용" 준수). ✔
-
-### 2. export↔import 왕복(라운드트립) — PASS (하네스 T6·T7)
-- 소스 store에 alice/빈닉/특수문자(`한글 & <b>`) 3건 → popup 포맷 payload(`schema/ver/exportedAt/count/entries`) 직렬화 → `JSON.parse` → `extractEntries` → **새 store**에 `importMany` → `list()` 대조: **uid/nick/addedAt 무손실**. ✔
-- 빈 목록 export → `count:0, entries:[]`. 혼합 파일(중복1+신규1+junk2) import → `{added:1,skipped:1,invalid:2}`, 기존 uid nick **미덮어씀**. ✔
-
-### 3. importMany 로직 독립 재검증 — PASS (하네스 38/38, storage-engineer 35/35와 별개 mock)
-`src/content/10-store.js`를 **실제로** `vm`에 로드(테스트별 신규 클로저 + 신규 chrome mock)해 검증:
-- **T1 머지 시맨틱**: 신규 추가/기존 스킵(nick·addedAt 미덮어씀)/invalid(비객체·uid결측·비숫자열·빈문자열) 집계 정확 `{added:2,skipped:1,invalid:5}`. ✔
-- **T2/T3 단일 flush**: 20건·60건(다중 청크) import 모두 **syncSet 정확히 1회**(항목별 아님). T3은 실제로 청크 2개+ 생성 확인. ✔
-- **T4 added=0 no-op**: 빈배열/비배열(null·객체)/전량invalid/전량중복 → **syncSet 0회**·즉시 resolve. ✔
-- **T5 C3 준용**: async storage에서 반환 Promise는 **디스크 쓰기 완료 후에만** resolve(메모리는 동기 반영, await 전 디스크 미기록 → await 후 기록·bl_meta 존재). ✔
-- **T8 C9 reconcile 보존**: import 미영속 항목이 외부 onChanged(다른 컨텍스트가 uid 추가) 끼어듦에도 **유실 없음**(A·import·external 3자 모두 생존). self-echo onChanged는 빈 delta no-op. ✔
-- **T9 addedAt 정규화**: 비숫자/≤0/null → 현재시각, 숫자문자열 `'1700000000000'` → 강제(Number). ✔
-
-### 4. manifest·구조 정합 — PASS
-- `version: "0.5.0"` ✔. `permissions: ["storage"]` 불변(내보내기는 Blob+`a[download]` — 추가 권한 불필요) ✔. `content_scripts.js` 목록 불변(팝업 파일은 manifest 무관) ✔.
-- popup.html:59 `<script src="../content/10-store.js">` → `src/content/10-store.js` 실재(파일 확인). 로드 순서(store→popup.js) 유지. ✔
-- 버튼/입력 id 배선 일치: html `fmkb-export`/`fmkb-import`/`fmkb-import-file`/`fmkb-io-status` ↔ popup.js `els.*` 참조 4개 전부 일치. ✔
-
-### 5. 팝업 DOM/XSS — PASS
-- 가져온 외부 문자열(nick 등)이 DOM에 닿는 경로 전수: `setIoStatus`(popup.js:283 `textContent`), 목록 렌더 `appendHighlighted`(createTextNode/textContent만), `nick.title`·`aria-label`은 property/`setAttribute`(파싱 컨텍스트 아님). **`innerHTML`/`insertAdjacentHTML`/`document.write`/`eval` 0건**(grep — 유일 매치는 "innerHTML 금지" 주석). ✔
-- 결과 요약은 숫자만(`formatImportResult`). ✔
-- **파일 입력·버스트 처리**: `input.value=''`로 동일 파일 재선택 가능(file 참조 선확보). import 중 `setIoBusy(true)`→완료 `.then`에서 `false`, 파일읽기 실패 outer `.catch`에서도 `false`(멱등). JSON.parse/형식오류는 busy 진입 전 조기 return(버튼 잠금 안 함). `showFatal`은 store 부재 시 두 버튼 비활성. ✔
-
-### 6. 문서 정합 — PASS
-- 계약(§2 시그니처·C10 표·§4 관용예시·로드맵 "구현됨(2026-07-08)"), TODO(Q7 `[x]`), PLAN(Q7), README(사용법·크로스브라우저·머지 시맨틱 "N명 추가·M명 중복·K건 무시"), DEPLOY(v0.5.0+ 경로) **모두 코드 동작과 일치**. README 요약 문구는 대표 예시(코드는 skipped/invalid 0이면 생략) — 결함 아님. ✔
-
-### 미검증(통과 처리 금지) · 실브라우저 게이트
-mock 한계(이 프로젝트 mock 거짓 PASS 전례: resurrection 버그): 아래는 mock 재현 불가 →
-- **[ ] 실 파일 다운로드**: popup에서 `a.click()` Blob 다운로드가 실 Chrome/Firefox 팝업 컨텍스트에서 파일 저장되는가(팝업이 닫히지 않는가, `revokeObjectURL` setTimeout(0) 지연으로 취소 안 되는가).
-- **[ ] 실 파일 업로드**: `<input type=file>` 선택 → `file.text()` 파싱 → import → 목록 즉시 갱신 확인. 동일 파일 재선택 시 change 재발화 확인.
-- **[ ] 실 Chrome sync 다중 컨텍스트**: 대량 import 후 다른 열린 탭이 새로고침 없이 반영(C9), 레이트리밋(분당 120) 미초과(단일 flush이므로 이론상 안전) 실측.
-- **[ ] 왕복 실전**: Chrome에서 내보내기 → Firefox에서 가져오기(또는 역방향) 목록 이관.
-- **[ ] 용량 임박**: 수천 명 목록 import 시 100KB 근접 경고·부분저장 동작(best-effort 경고는 차단 안 함).
-
-### 결론
-**PASS.** 이번 변경은 6+1 API FROZEN을 유지하는 가산적·비파괴 확장이며, 내보내기는 신규 API/권한 없이 `list()` 직렬화로, 가져오기는 기존 flush 경로를 재사용하는 `importMany`로 구현됐다. 경계면 계약·라운드트립·머지 시맨틱·단일 flush·XSS 안전성·문서 정합 모두 확인. blocker/major 0건. 남은 것은 실 파일 I/O·실 Chrome sync의 실브라우저 게이트(위 체크리스트) — 이 프로젝트 원칙상 머지 전 사용자 실브라우저 확인 필요.
-
----
-
-## 재검증 — 모바일 지원(TODO Q2) — 2026-07-08 · 브랜치 `feat/mobile-support` — **PASS**
-
-변경 요지: manifest `matches`에 `https://m.fmkorea.com/*` 추가·ver 0.6.0, 20-selectors.js 주석만 갱신(로직 무변경), content.css·popup.css `@media (pointer: coarse)` 터치 타깃, 문서(스킬/PLAN/README/TODO/DEPLOY) 갱신+"모바일 member_ 없음" 드리프트 정정. 실행 테스트 12/12 PASS.
-
-### 1. manifest 정합성 — PASS
-- mv3, `version 0.6.0`, `permissions:["storage"]`만(host_permissions/scripting/tabs 없음). `matches` 2패턴 모두 유효 MV3 match pattern. `js` 8파일 불변·실재, `css:["src/content.css"]` 등록(미디어쿼리 m.에도 주입), `default_popup`·`icons` 실재.
-- `browser_specific_settings.gecko`(id+strict_min_version 115.0)로 Firefox Android 로드 충분 — `gecko_android`는 필수 아님(부재 시 gecko 폴백).
-
-### 2. 로직 회귀 0 — PASS
-- `git diff main -- 'src/**/*.js'` = 20-selectors.js 1파일. 주석 제거+공백 정규화 후 main↔branch **실행 코드 완전 동일**(주석만 변경). 다른 JS 무변경.
-
-### 3. 셀렉터-실측 정합 — PASS (Node 하네스 6/6 + 체인 2/2 + 라이브 4/4)
-- 하네스(vm+linkedom로 실제 00/20 로드): m_article·m_article2 → 규칙 ②로 `div.rd rd_nav_style2 clear` 해석(UID 515859774). m_list·m_list_zine → 숫자 member_ 앵커 0개(거짓숨김 없음).
-- 조상 체인 실측: `a.member_*.member_plate < div.side < div.btm_area < div.board < div.rd_hd < #bd_capture < div.rd.rd_nav_style2 < div.bd.bd_mobile` — 코드 주석·스킬과 정확 일치.
-- 라이브 m.fmkorea.com(2026-07-08): 모바일 UA 목록 member_ 0개, 게시글 member_+.rd_hd+.rd+.fdb_lst(지연 렌더) 존재·정적 li#comment_ 부재. 데스크톱 UA→www 리다이렉트 / 모바일 UA는 m. 유지 — 문서 주장 확인.
-
-### 4. CSS 정합 — PASS
-- content.css(10/10)·popup.css(43/43) 브레이스 균형, 순수 가산(제거 0). 모든 신규 규칙이 `@media (pointer: coarse)` 내부 → 데스크톱 기본 규칙 불변.
-- 셀렉터 실존: `#fmkb-context-menu`(NS.MENU_ID)·`.fmkb-menu-item`·`#fmkb-toast`(NS.TOAST_ID, ID 셀렉터 정확) / `.fmkb-search`·`.fmkb-unblock`(popup.js:198)·`.fmkb-io-btn` 전부 코드와 일치.
-
-### 5. 문서 정합 — PASS
-- 스킬/PLAN/README/TODO/DEPLOY 모바일 기술이 실측과 일치. "게이트에서 확정" 표기 정직(과대약속 없음). 기존 드리프트 정정 근거 실측과 부합.
-
-### 관찰(이슈 아님)
-- O1(nit): `@media (pointer: coarse)`는 주 포인터 기준 → 터치 주입력 데스크톱에서도 확대(순수 cosmetic, 의도 부합).
-- O2: TODO Q2 [x] 표시이나 런타임 미게이트 — 다만 잔여 게이트 4개를 즉시 열거해 정직.
-
-### 미검증(통과 처리 금지) · 실기기/모바일-UA 게이트
-- G1 지연 렌더 댓글이 li#comment_{srl}.fdb_itm로 렌더돼 MutationObserver가 숨기는지
-- G2 Android 롱프레스가 contextmenu 발화 + preventDefault로 네이티브 메뉴 억제
-- G3 롱프레스 직후 스크롤 경합으로 메뉴 즉시 닫힘 유무
-- G4 Firefox Android 팝업 열림·반응형(pointer:coarse)·차단/해제 동작
-- G5 서명 xpi/web-ext run으로 실제 로드(strict_min_version 115 충족)
-
-### 결론
-정적 검증 범위(manifest·로직 회귀·셀렉터 실측·CSS·문서)에서 **PASS**, correctness 이슈 0. 모바일 런타임은 실기기 게이트로 명시 잔존. PR 진행 가능(머지는 사용자).
+## 최종 델타 재확인 (MINOR-2R2·MINOR-9·리뷰 N11 반영분, 실 Chrome)
+
+- 대상: `git diff main -- src/content.css src/content/50-toast.js`
+  - `#fmkb-toast.fmkb-toast-absorb::after`(흡수 영역을 위아래 16px·좌우 48px 넓힘)
+  - `guardKeys(back)`(포커스를 돌려준 요소에만 500ms 동안 capture keydown으로 Enter·Space 차단)
+  - `id="fmkb-toast-msg"`와 `aria-describedby`
+- 소스는 고치지 않았다.
+- 스크립트
+  - 재실행: `t_chrome3.js`, `t_ext3.js`, `t_chrome_toast`·`t_chrome_tab`·`t_chrome_fix`, jsdom 4종
+  - 신규 델타: `t_chrome4.js`, `t_ext4.js`
+  - 출력: `out_chrome3_delta.txt`, `out_ext3_delta.txt`, `out_chrome4.txt`
+
+### 판정: MINOR-2R2·MINOR-9 해소, N11 확인, 회귀 없음
+
+| 묶음 | 실행 | PASS | FAIL | 비고 |
+|------|-----:|-----:|-----:|------|
+| `t_chrome3.js` 재실행 | 40 | 40 | 0 | 직전 FAIL이던 S1e(가장자리 0/48)와 S3b(Enter 두 번 0/4) 해소 |
+| `t_ext3.js` 재실행(실제 확장) | 25 | 25 | 0 | 직전 FAIL이던 E6 double 해소 |
+| `t_chrome4.js` 델타(신규) | 18 | 18 | 0 | 아래 D1~D6 |
+| `t_ext4.js` 델타(실제 확장, 신규) | 6 | 6 | 0 | 아래 X1~X3 |
+| 실 Chrome 기존 3종 | 11 | 11 | 0 | |
+| jsdom: `t_toast` / `t_content` / `t_popup` / `t_popup2` | 66 / 46 / 61 / 63 | 66 / 46 / 60 / 63 | 0 / 0 / 1 / 0 | `t_popup` FAIL 1건은 P11(정보), 직전과 같음 |
+| **합계** | **336** | **335** | **1** | 정보 1건(P11)만 남음 |
+
+### 확인 내용
+
+**버튼 오른쪽 끝 더블클릭(D1, 120회)**
+- 조건
+  - 화면: 데스크톱·터치
+  - 경로: 차단 → 실행 취소, 메뉴 해제 → 실행 취소
+  - 결과 토스트 지연: 10/120/300ms(늦게 뜨는 경우 포함)
+  - 클릭 간격: 60/150ms
+  - 클릭 지점: 버튼 폭 90% 지점의 위 10%·가운데·아래 90%, 그리고 오른쪽 끝 1~2px의 위·아래 끝. 버튼·토스트 둥근 모서리는 원래 클릭이 안 되므로, 버튼에 실제로 닿는 지점까지 안쪽으로 옮겼다.
+- 결과
+  - 누수 0/120, 실행은 매번 1회.
+  - 두 번째 클릭이 토스트 상자 밖에 떨어진 68회는 모두 `::after` 덕분에 hit 대상이 `#fmkb-toast`였다. 원인은 둘이다.
+    - 결과 토스트가 좁다.
+    - 숨김 전환 중 토스트가 translateY로 12px 내려가 버튼 위쪽 끝이 상자 밖으로 나간다.
+  - 두 번째 클릭 때 결과 토스트가 아직 뜨지 않은 60회도 누수 0이다.
+- 실제 확장 X1(실제 저장, 실제 결과 토스트, 버튼 폭 90% 지점의 위·가운데·아래와 오른쪽 끝 2px, 간격 60/150ms): 누수 0/8, 실행 취소 8/8.
+
+**흡수 창 이후(D2)**: 약 650ms 뒤에는 버튼 오른쪽 끝 클릭도, `::after` 확장 구역(결과 토스트 오른쪽 30px) 클릭도 페이지에 닿는다(데스크톱·터치). 일반·오류 토스트 통과도 회귀 없다(`t_chrome3` S2).
+
+**키보드(D3, X2)**
+- 원래 요소가 링크일 때: Enter 두 번(바로, 30ms, 300ms 간격) 모두 실행 0/3. 0.6초 뒤 Enter는 정상 실행.
+- 원래 요소가 버튼일 때
+  - Enter→Enter, Space→Space, Enter→Space 모두 실행 0.
+  - 0.6초 뒤 Space와 Enter는 정상 실행.
+- 차단은 돌려받은 요소에만 걸린다. 0.5초 안에 Shift+Tab으로 l1에 가서 Enter를 누르면 l1이 정상 실행된다.
+- 실제 확장 X2: Enter 두 번이면 `#under` 실행 0, 0.6초 뒤 Enter는 1회.
+
+**마우스 경로(D4)**
+- 입력창에서 누르면 포커스가 입력창으로 돌아가고, 곧바로 친 글자 "ab"도 정상 입력된다.
+- BODY에서 누르면 BODY로 간다.
+- `t_chrome3` S3d 회귀 없음.
+
+**N11(D5, X3)**
+- `aria-describedby="fmkb-toast-msg"`가 유일한 `.fmkb-toast-msg`를 가리킨다.
+- 실 Chrome 접근성 트리에서 버튼 이름은 "실행 취소", 설명은 메시지다(예: "홍길동 님을 차단했습니다"). 메시지 요소가 aria-hidden이어도 설명은 잡힌다.
+- 메시지가 바뀌면 설명도 따라 바뀐다("김철수 님을 차단 해제했습니다").
+- 본문 텍스트 노출은 여전히 1회다(live 영역만).
+- 실제 확장 X3: 설명 "댓글러 님을 차단했습니다".
+
+**레이아웃(D6)**: 360px 화면, 긴 닉네임 기준. 흡수 중 `::after`는 absolute이고, 토스트 크기(180×87)와 문서 가로 넘침(scrollWidth 360 = clientWidth)이 변하지 않는다. 0.5초 뒤 `::after`는 사라진다.
+
+### 남은 정보 항목(수정 필요 없음, 참고)
+- INFO-8(신규): 마우스로 실행 취소한 직후 0.5초 안에 입력창에서 Space를 치면 삼켜진다(D4: "x y" → "xy"). 키 차단이 키보드로 누른 경우뿐 아니라, Chrome의 마우스 경로(mousedown 때 버튼에 포커스)에도 걸리기 때문이다. 글자는 영향이 없다.
+  - 클릭 후 0.5초 안에 Space를 칠 일은 드물다.
+  - 원하면 클릭 이벤트의 `e.detail === 0`(키보드로 누름)일 때만 `guardKeys`를 건다.
+- INFO-9(신규): 흡수 창(0.5초) 안에 새 실행 취소 토스트가 뜨면, 그 버튼 위를 `::after`가 덮어 창이 끝날 때까지 눌리지 않는다(D7: 창 안 0회, 창 뒤 1회). 실행 취소 직후 0.5초 안에 다른 작성자를 차단해야 생기는 일이라 사실상 일어나지 않는다.
+- 흡수 중 확장 구역(토스트 바깥 좌우 48px·위아래 16px)의 페이지 클릭도 0.5초 동안 흡수된다. 의도된 범위다.
+- INFO-1(P11)·INFO-4·INFO-5·INFO-6·INFO-7·MINOR-7: 변경 없음.
+
+### 미검증(변경 없음)
+- 실제 화면 낭독기 낭독: describedby 낭독 포함.
+- Firefox Android 실기기 터치: `::after`는 hit-testing 기반이라 이벤트 종류와 무관할 것으로 보이지만, 실기기 탭은 재지 않았다.
+- 실 Chrome 툴바 팝업 창.
+- 사이트 CSS의 `[hidden]` 무력화.
+- 샤딩 경계.

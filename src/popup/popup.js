@@ -9,9 +9,11 @@
  *   await store.load()            // 팝업 열릴 때 1회
  *   store.list()  -> [{uid, nick, addedAt}]  // addedAt desc, 복사본 (내보내기 직렬화에도 사용)
  *   store.count() -> number
+ *   store.isBlocked(uid) -> boolean  // 해제·되돌리기 저장 중 다른 곳의 반대 동작 판정
  *   await store.unblock(uid)      // uid는 문자열, no-op 안전
  *   store.onChange(cb) -> unsub   // (선택) 외부 변경 라이브 재렌더 — C9
- *   await store.importMany(items) -> {added,skipped,invalid}  // (선택) 배치 가져오기 — C10
+ *   await store.importMany(items) -> {added,skipped,invalid}  // (선택) 배치 가져오기 — C10 · 해제 되돌리기(1개)
+ *   await store.block(uid, nick)  // importMany가 없는 구 store에서만 되돌리기 폴백(차단 날짜는 지금으로 바뀜)
  *
  * 내보내기/가져오기(2026-07-08, TODO Q7): 내보내기는 새 API 불필요 — list() 복사본을
  *   JSON으로 직렬화해 Blob 다운로드(권한 추가 없음). 가져오기는 파일을 파싱해 importMany로
@@ -33,6 +35,11 @@
  *
  * 라이브 반영: 팝업 해제는 store.onChange(C9)로 이미 열린 fmkorea 탭에도 새로고침 없이 반영된다.
  *          팝업 화면 자체도 즉시 갱신한다.
+ *
+ * 해제 되돌리기(2026-10-05): 해제한 줄은 목록에서 바로 빼지 않고 원래 자리에 '차단 해제됨 + 되돌리기'로
+ *   남긴다(팝업을 닫으면 사라짐). 되돌리기는 해제 전 항목을 importMany([항목])로 다시 넣는다 — importMany는
+ *   항목의 addedAt을 그대로 쓰므로 원래 차단 날짜·목록 자리로 돌아간다(block은 지금 시각으로 바꾼다).
+ *   해제·되돌리기 실패 안내는 푸터가 아니라 그 줄 안에 표시하고, 같은 줄을 다시 시도하면 지운다.
  */
 (function () {
   'use strict';
@@ -54,6 +61,9 @@
   // 그래서 Firefox 팝업에선 파일 선택을 탭 보기에서 하도록 넘긴다. 판별은 확장 URL 스킴(moz-extension:)으로.
   var NEEDS_TAB_FOR_FILE_PICKER =
     !IS_TAB_VIEW && location.protocol === 'moz-extension:';
+  // 터치 기기(Firefox Android)에선 우클릭 대신 길게 눌러 작성자 메뉴를 연다 — 빈 목록 안내 문구에 반영.
+  var IS_TOUCH =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
 
   var store = window.FMKBlind && window.FMKBlind.store;
 
@@ -66,11 +76,28 @@
     importBtn: document.getElementById('fmkb-import'),
     importFile: document.getElementById('fmkb-import-file'),
     ioStatus: document.getElementById('fmkb-io-status'),
+    live: document.getElementById('fmkb-live'),
   };
 
   // store.list() 스냅샷 캐시. 검색은 이 캐시 위에서만 필터(매 입력마다 store 재호출 안 함).
   var allItems = [];
   var query = '';
+
+  // 이번 팝업에서 해제한 유저(uid → {uid, nick, addedAt}). 원래 자리에 '해제됨' 줄로 남겨 되돌릴 수 있게 한다.
+  // 팝업을 닫으면 사라진다. 다른 곳에서 다시 차단되면 refresh가 지운다.
+  var undone = new Map();
+  // 저장 중인 uid — 그사이 목록이 다시 그려져도 버튼을 비활성으로 유지해 연타를 막는다.
+  // refresh의 undone·rowErrors 정리도 저장 중인 uid는 건너뛴다(결과는 작업이 끝날 때 정한다).
+  var busy = new Set();
+  // 해제 저장 중인 항목(uid → 해제 전 항목). store 메모리에선 이미 빠졌지만 저장이 끝날 때까지
+  // 원래 줄을 그대로 그린다(다른 줄 작업이 먼저 끝나 다시 그려져도 줄이 사라졌다 나타나지 않게).
+  var inflight = new Map();
+  // 줄별 실패 안내(uid → 문구). 같은 줄을 다시 시도하면 지운다.
+  var rowErrors = new Map();
+  // 작업이 끝난 뒤 다시 그릴 때 포커스를 돌려줄 줄(uid). 저장 중 버튼을 비활성하면 포커스가 빠지므로 기억해 둔다.
+  // 여러 줄 작업이 겹치면 마지막으로 누른 줄(lastActedUid)이 끝날 때만 돌려준다.
+  var focusUid = null;
+  var lastActedUid = null;
 
   // ── 유틸 ───────────────────────────────────────────────
 
@@ -178,13 +205,14 @@
     els.state.appendChild(document.createTextNode(text));
   }
 
-  // store 실패(reject err.code) → 사용자 안내 문구.
-  function storeErrorMessage(e, what) {
+  // store 실패(reject err.code) → 사용자 안내 문구. withFit: QUOTA의 err.fit(더 넣을 수 있는 인원)을 덧붙일지
+  // — 가져오기에만 의미가 있다(한 명을 되돌리다 실패했을 때 "약 0명까지"는 도움이 안 됨).
+  function storeErrorMessage(e, what, withFit) {
     var code = e && e.code;
     if (code === 'CONTEXT_INVALIDATED') return '확장 프로그램이 업데이트되었습니다 — 팝업을 다시 열어 주세요.';
     if (code === 'SCHEMA_NEWER') return what + ' 실패 — 다른 기기의 더 새 버전이 저장한 목록입니다. 확장을 업데이트해 주세요.';
     if (code === 'QUOTA') {
-      var fit = e && typeof e.fit === 'number' ? ' 지금은 약 ' + e.fit + '명까지 더 저장할 수 있습니다.' : '';
+      var fit = withFit && e && typeof e.fit === 'number' ? ' 지금은 약 ' + e.fit + '명까지 더 저장할 수 있습니다.' : '';
       return what + ' 실패 — 동기화 저장 공간(약 100KB)이 부족합니다.' + fit;
     }
     return what + ' 실패 — 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.';
@@ -218,8 +246,10 @@
   // ── 항목 렌더 ──────────────────────────────────────────
 
   function buildItem(it, q) {
+    var uid = String(it.uid);
+    var isUndone = undone.has(uid);
     var li = document.createElement('li');
-    li.className = 'fmkb-item';
+    li.className = isUndone ? 'fmkb-item fmkb-item-undone' : 'fmkb-item';
 
     var info = document.createElement('div');
     info.className = 'fmkb-item-info';
@@ -237,35 +267,82 @@
     meta.appendChild(document.createTextNode('UID '));
     var uidSpan = document.createElement('span');
     uidSpan.className = 'fmkb-item-uid';
-    appendHighlighted(uidSpan, String(it.uid), q);
+    appendHighlighted(uidSpan, uid, q);
     meta.appendChild(uidSpan);
-    var dateStr = formatDate(it.addedAt);
+    var dateStr = isUndone ? '차단 해제됨' : formatDate(it.addedAt);
     if (dateStr) meta.appendChild(document.createTextNode(' · ' + dateStr));
 
     info.appendChild(nick);
     info.appendChild(meta);
 
+    var err = rowErrors.get(uid);
+    if (err) {
+      var errEl = document.createElement('div');
+      errEl.className = 'fmkb-item-error';
+      errEl.textContent = err;
+      info.appendChild(errEl);
+    }
+
     var btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'fmkb-unblock';
-    btn.textContent = '차단 해제';
-    btn.setAttribute('aria-label', nickText + ' 차단 해제');
-    btn.addEventListener('click', function () {
-      onUnblock(it, btn);
-    });
+    btn.setAttribute('data-uid', uid);
+    btn.disabled = busy.has(uid);
+    if (isUndone) {
+      btn.className = 'fmkb-restore';
+      btn.textContent = '되돌리기';
+      btn.setAttribute('aria-label', nickText + ' 다시 차단');
+      btn.addEventListener('click', function () {
+        onRestore(it, btn);
+      });
+    } else {
+      btn.className = 'fmkb-unblock';
+      btn.textContent = '차단 해제';
+      btn.setAttribute('aria-label', nickText + ' 차단 해제');
+      btn.addEventListener('click', function () {
+        onUnblock(it, btn);
+      });
+    }
 
     li.appendChild(info);
     li.appendChild(btn);
     return li;
   }
 
+  function byAddedAtDesc(a, b) {
+    return (b.addedAt || 0) - (a.addedAt || 0);
+  }
+
   function render() {
     var q = query.trim().toLowerCase();
 
+    // 다시 그린 뒤 포커스를 돌려줄 버튼: 지금 목록 안에서 포커스를 가진 버튼, 없으면(저장 중 버튼이
+    // 비활성돼 포커스가 빠진 경우) 작업이 막 끝난 줄(focusUid). 사용자가 검색창·다른 버튼으로 옮겼으면 뺏지 않는다.
+    var active = document.activeElement;
+    var focusInList = !!active && els.list.contains(active);
+    var restoreUid = focusInList ? active.getAttribute('data-uid') : null;
+    if (focusUid && (!active || active === document.body)) restoreUid = focusUid;
+    focusUid = null;
+
     // 로드 모듈 부재 등 치명적 상태에서는 render 호출 안 됨(init에서 차단).
+    // 이번 팝업에서 해제한 줄·해제 저장 중인 줄도 addedAt 순서로 원래 자리에 끼워 넣는다(정렬은 안정적).
+    // 같은 uid는 한 줄만: 해제됨(되돌리기 저장 중이면 store에도 있음) → store 목록 → 해제 저장 중 순으로 우선.
     var items = allItems;
+    if (undone.size || inflight.size) {
+      var seen = new Set();
+      items = [];
+      var addOnce = function (it) {
+        var u = String(it.uid);
+        if (seen.has(u)) return;
+        seen.add(u);
+        items.push(it);
+      };
+      undone.forEach(addOnce);
+      allItems.forEach(addOnce);
+      inflight.forEach(addOnce);
+      items.sort(byAddedAtDesc);
+    }
     if (q) {
-      items = allItems.filter(function (it) {
+      items = items.filter(function (it) {
         var nick = (it.nick || '').toLowerCase();
         var uid = String(it.uid).toLowerCase();
         return nick.indexOf(q) !== -1 || uid.indexOf(q) !== -1;
@@ -274,11 +351,13 @@
 
     els.list.textContent = '';
 
-    if (allItems.length === 0) {
+    if (allItems.length === 0 && undone.size === 0 && inflight.size === 0) {
       setState(
         'empty',
         '🗒️',
-        '차단한 유저가 없습니다.\nfmkorea에서 작성자 닉네임을 우클릭해 차단할 수 있어요.'
+        '차단한 유저가 없습니다.\nfmkorea에서 작성자 닉네임을 ' +
+          (IS_TOUCH ? '길게 눌러' : '우클릭해') +
+          ' 차단할 수 있어요.'
       );
       return;
     }
@@ -293,23 +372,95 @@
       frag.appendChild(buildItem(items[i], q));
     }
     els.list.appendChild(frag);
+
+    if (restoreUid) {
+      var target = els.list.querySelector('button[data-uid="' + CSS.escape(restoreUid) + '"]');
+      if (target && !target.disabled) target.focus({ preventScroll: true });
+    }
   }
 
-  // ── 차단 해제 ──────────────────────────────────────────
+  // ── 차단 해제 / 되돌리기 ───────────────────────────────
+
+  // 화면 낭독기용 알림. 줄 안의 실패 안내는 다시 그린 요소라 읽히지 않으므로 별도 live 영역으로 알린다.
+  // 같은 문구가 연달아 와도 다시 읽히도록 비웠다가 다음 태스크에 채운다.
+  function announce(text) {
+    if (!els.live) return;
+    els.live.textContent = '';
+    setTimeout(function () {
+      els.live.textContent = text;
+    }, 50);
+  }
+
+  // 저장 시작: 연타 방지 + 같은 줄의 이전 실패 안내 제거.
+  function beginRowWork(uid, btn) {
+    if (busy.has(uid)) return false;
+    busy.add(uid);
+    lastActedUid = uid;
+    rowErrors.delete(uid);
+    btn.disabled = true;
+    var li = btn.closest('li');
+    var oldErr = li && li.querySelector('.fmkb-item-error');
+    if (oldErr) oldErr.remove();
+    return true;
+  }
+
+  function endRowWork(uid) {
+    busy.delete(uid);
+    if (lastActedUid === uid) focusUid = uid;
+    refresh(); // store.list()/count() 재호출로 화면 즉시 갱신
+  }
+
+  function rowFailed(uid, e, what) {
+    console.error('[FMK-Blind popup] ' + what + ' 실패', e);
+    var msg = storeErrorMessage(e, what);
+    rowErrors.set(uid, msg);
+    announce(msg);
+  }
 
   function onUnblock(it, btn) {
-    btn.disabled = true;
+    var uid = String(it.uid);
+    if (!beginRowWork(uid, btn)) return;
+    var entry = { uid: uid, nick: it.nick == null ? '' : String(it.nick), addedAt: it.addedAt };
+    inflight.set(uid, entry);
     // store.unblock은 sync 쓰기가 끝난 뒤 resolve한다(계약 C3). 실패하면 store가 해제를 되돌리고
-    // reject하므로, 오류를 알리고 목록을 다시 그린다(항목이 그대로 남아 재시도 가능 — 이슈 #13).
-    new Promise(function (resolve) { resolve(store.unblock(String(it.uid))); })
+    // reject하므로, 그 줄에 오류를 표시하고 다시 그린다(항목이 그대로 남아 재시도 가능 — 이슈 #13).
+    new Promise(function (resolve) { resolve(store.unblock(uid)); })
+      .then(
+        function () {
+          // 저장을 기다리는 사이 다른 곳에서 다시 차단됐으면 되돌릴 것이 없다.
+          if (!store.isBlocked(uid)) undone.set(uid, entry);
+        },
+        function (e) {
+          rowFailed(uid, e, '차단 해제');
+        }
+      )
       .then(function () {
-        refresh(); // store.list()/count() 재호출로 화면 즉시 갱신
-      })
-      .catch(function (e) {
-        console.error('[FMK-Blind popup] unblock 실패', e);
-        setIoStatus('error', storeErrorMessage(e, '차단 해제'));
-        btn.disabled = false; // 실패 시 같은 항목 재시도 허용
-        refresh();
+        inflight.delete(uid);
+        endRowWork(uid);
+      });
+  }
+
+  function onRestore(entry, btn) {
+    var uid = entry.uid;
+    if (!beginRowWork(uid, btn)) return;
+    new Promise(function (resolve) {
+      resolve(
+        typeof store.importMany === 'function'
+          ? store.importMany([entry])
+          : store.block(uid, entry.nick)
+      );
+    })
+      .then(
+        function () {
+          if (store.isBlocked(uid)) undone.delete(uid);
+          else rowFailed(uid, null, '되돌리기'); // importMany가 항목을 받지 않은 경우(비정상 uid 등)
+        },
+        function (e) {
+          rowFailed(uid, e, '되돌리기');
+        }
+      )
+      .then(function () {
+        endRowWork(uid);
       });
   }
 
@@ -490,7 +641,7 @@
             // 용량 초과면 아무것도 바뀌지 않고, 쓰기 실패면 store가 추가분을 되돌린다(계약 C10).
             console.error('[FMK-Blind popup] importMany 실패', e);
             refresh();
-            setIoStatus('error', storeErrorMessage(e, '가져오기'));
+            setIoStatus('error', storeErrorMessage(e, '가져오기', true));
           })
           .then(function () {
             setIoBusy(false);
@@ -537,6 +688,16 @@
       showFatal();
       return;
     }
+    // 다른 곳(탭·기기)에서 다시 차단된 '해제됨' 줄은 일반 줄로 돌아가고,
+    // 목록에서 사라진 유저의 실패 안내는 버린다(나중에 다시 나타날 때 옛 오류가 붙지 않게).
+    // 저장 중인 uid는 건너뛴다 — 되돌리기 저장 중엔 store 메모리에 이미 들어가 있어(isBlocked true)
+    // 여기서 지우면 실패했을 때 줄과 실패 안내가 함께 사라진다.
+    undone.forEach(function (_, uid) {
+      if (!busy.has(uid) && store.isBlocked(uid)) undone.delete(uid);
+    });
+    rowErrors.forEach(function (_, uid) {
+      if (!busy.has(uid) && !store.isBlocked(uid) && !undone.has(uid)) rowErrors.delete(uid);
+    });
     updateCount();
     render();
   }
@@ -548,7 +709,8 @@
       !store ||
       typeof store.list !== 'function' ||
       typeof store.count !== 'function' ||
-      typeof store.unblock !== 'function'
+      typeof store.unblock !== 'function' ||
+      typeof store.isBlocked !== 'function'
     ) {
       console.error('[FMK-Blind popup] window.FMKBlind.store API 미탑재 — store.js 로드 실패 추정');
       showFatal();
@@ -608,7 +770,7 @@
         // - diff 인자는 사용하지 않는다 — store.list()/count() 전체 재조회로 충분하고,
         //   기존 refresh()가 캐시/인원수/렌더(검색 필터 포함)를 일괄 갱신한다.
         // - 팝업 자신의 해제가 성공하면 diff가 비어 이 콜백이 호출되지 않는다. 저장에 실패하면 store가
-        //   되돌린 변경을 통지하므로 onUnblock의 catch와 함께 두 번 갱신될 수 있으나 무해하다(계약 C7·C9).
+        //   되돌린 변경을 통지하므로 해제·되돌리기 실패 처리(endRowWork)와 함께 두 번 갱신될 수 있으나 무해하다(계약 C7·C9).
         // - typeof 가드: onChange 미탑재(구버전 store)에도 안전 — 단순히 라이브 동기만 비활성.
         if (typeof store.onChange === 'function') {
           store.onChange(function () {

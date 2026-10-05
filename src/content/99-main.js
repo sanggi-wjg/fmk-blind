@@ -85,41 +85,93 @@
     }
 
     // 3) 우클릭 커스텀 메뉴 배선 — 차단/해제 동작을 store + 현재 탭 즉시 반영으로 연결.
+    //    계약 C3: resolve = sync 저장 완료 → 그 다음 숨김/복구. reject면 store가 변경을 되돌렸으므로
+    //    화면은 그대로 두고 실패 안내만 한다(저장 실패를 성공으로 보이지 않게 — 이슈 #13).
+    //    아래 apply* 는 화면까지 반영했으면 true, 실패(오류 토스트)·그사이 반대 동작이 이긴 경우 false.
+    function saveFailed(what, e) {
+      console.warn('[FMK-Blind] ' + what + ' 저장 실패', e);
+      NS.toast.show(saveFailMessage(e), { kind: 'error' });
+    }
+
+    function hideBlocked(uid) {
+      nickIndex = null;
+      NS.hide.hideByUid(uid); // 현재 탭 즉시 숨김 반영
+      NS.hide.scanNickRows(document, uidForNick);
+    }
+
+    async function applyBlock(uid, nick) {
+      try {
+        await store.block(uid, nick);
+      } catch (e) {
+        saveFailed('차단', e);
+        return false;
+      }
+      // 저장을 기다리는 사이 같은 유저를 바로 해제했으면 그 결과가 이긴다(숨기지 않는다).
+      if (!store.isBlocked(uid)) return false;
+      hideBlocked(uid);
+      return true;
+    }
+
+    async function applyUnblock(uid) {
+      try {
+        await store.unblock(uid);
+      } catch (e) {
+        saveFailed('차단 해제', e);
+        return false;
+      }
+      if (store.isBlocked(uid)) return false; // 그사이 다시 차단했으면 그 결과가 이긴다
+      nickIndex = null;
+      NS.hide.unhideByUid(uid); // 현재 탭 즉시 복구
+      // 같은 닉네임의 다른 차단 uid 가 남아 있으면 방금 복구된 목록 행을 그 uid 로 다시 숨긴다.
+      NS.hide.scanNickRows(document, uidForNick);
+      return true;
+    }
+
+    // 해제 되돌리기: 해제 전 항목을 importMany 로 다시 넣어 원래 차단 날짜(팝업 목록 순서)를 지킨다
+    // (block 은 새 uid 의 addedAt 을 지금으로 정한다). importMany 가 없는 store 면 block 으로 대신한다.
+    async function applyRestore(entry) {
+      try {
+        if (typeof store.importMany === 'function') await store.importMany([entry]);
+        else await store.block(entry.uid, entry.nick);
+      } catch (e) {
+        saveFailed('다시 차단', e);
+        return false;
+      }
+      if (!store.isBlocked(entry.uid)) return false;
+      hideBlocked(entry.uid);
+      return true;
+    }
+
     NS.contextmenu.install({
       isBlocked: (uid) => store.isBlocked(uid),
 
-      // 계약 C3: resolve = sync 저장 완료 → 그 다음 숨김 처리. reject면 store가 변경을 되돌렸으므로
-      // 숨기지 않고 실패 안내만 한다(저장 실패를 성공으로 보이지 않게 — 이슈 #13).
       async onBlock(uid, nick) {
-        try {
-          await store.block(uid, nick);
-        } catch (e) {
-          console.warn('[FMK-Blind] 차단 저장 실패', e);
-          NS.toast.show(saveFailMessage(e));
-          return;
-        }
-        // 저장을 기다리는 사이 같은 유저를 바로 해제했으면 그 결과가 이긴다(숨기지 않는다).
-        if (!store.isBlocked(uid)) return;
-        nickIndex = null;
-        NS.hide.hideByUid(uid); // 현재 탭 즉시 숨김 반영
-        NS.hide.scanNickRows(document, uidForNick);
-        NS.toast.show((nick || uid) + ' 님을 차단했습니다');
+        if (!(await applyBlock(uid, nick))) return;
+        const label = nick || uid;
+        // 메뉴를 잘못 눌러 글이 통째로 사라진 경우를 위해 바로 되돌릴 수 있게 한다.
+        NS.toast.show(label + ' 님을 차단했습니다', {
+          action: {
+            label: '실행 취소',
+            onClick: async () => {
+              if (await applyUnblock(uid)) NS.toast.show(label + ' 님 차단을 취소했습니다');
+            },
+          },
+        });
       },
 
       async onUnblock(uid, nick) {
-        try {
-          await store.unblock(uid);
-        } catch (e) {
-          console.warn('[FMK-Blind] 차단 해제 저장 실패', e);
-          NS.toast.show(saveFailMessage(e));
-          return;
-        }
-        if (store.isBlocked(uid)) return; // 그사이 다시 차단했으면 그 결과가 이긴다
-        nickIndex = null;
-        NS.hide.unhideByUid(uid); // 현재 탭 즉시 복구
-        // 같은 닉네임의 다른 차단 uid 가 남아 있으면 방금 복구된 목록 행을 그 uid 로 다시 숨긴다.
-        NS.hide.scanNickRows(document, uidForNick);
-        NS.toast.show((nick || uid) + ' 님을 차단 해제했습니다');
+        // 되돌리기용으로 해제 전 항목(저장 닉네임·차단 날짜)을 잡아 둔다.
+        const entry = store.list().find((it) => it.uid === uid) || { uid, nick: nick || '', addedAt: null };
+        if (!(await applyUnblock(uid))) return;
+        const label = nick || uid;
+        NS.toast.show(label + ' 님을 차단 해제했습니다', {
+          action: {
+            label: '실행 취소',
+            onClick: async () => {
+              if (await applyRestore(entry)) NS.toast.show(label + ' 님을 다시 차단했습니다');
+            },
+          },
+        });
       },
     });
 
