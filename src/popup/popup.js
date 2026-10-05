@@ -105,8 +105,9 @@
    * text를 parent에 추가하되 q(소문자) 일치 구간을 <mark>로 강조.
    * 닉네임은 외부(fmkorea) 입력이므로 textContent로만 다룬다(XSS 방지).
    * 소문자 변환으로 길이가 바뀌는 문자(예: 'İ' → 'i̇')가 있으면 소문자 문자열의 인덱스가 원문과
-   * 어긋난다(이슈 #20). 길이가 같으면 전체 문자열 소문자를 그대로 쓰고(문맥 의존 변환·보조 평면 문자도
-   * 필터와 동일하게 처리), 다를 때만 코드포인트 단위로 소문자화하며 '소문자 위치 → 원문 구간' 표를 만든다.
+   * 어긋난다(이슈 #20). 그래서 매칭은 항상 필터와 같은 '전체 문자열 소문자'로 하고(문맥 의존 변환 — 예:
+   * 끝의 Σ→ς — 도 필터와 일치), 길이가 다를 때만 코드포인트별 소문자 길이로 '소문자 위치 → 원문 구간' 표를 만든다.
+   * (코드포인트별 소문자 길이는 문맥과 무관해 그 합이 전체 소문자 길이와 같다. 어긋나면 강조 없이 원문만 표시)
    */
   function appendHighlighted(parent, text, q) {
     text = String(text == null ? '' : text);
@@ -118,18 +119,20 @@
     var origStart = null; // origStart[k]/origEnd[k] = lower[k]를 만든 원문 글자의 [시작, 끝) 위치
     var origEnd = null;
     if (lower.length !== text.length) {
-      lower = '';
       origStart = [];
       origEnd = [];
       for (var c = 0; c < text.length; ) {
         var ch = String.fromCodePoint(text.codePointAt(c));
-        var l = ch.toLowerCase();
-        for (var u = 0; u < l.length; u++) {
+        var n = ch.toLowerCase().length;
+        for (var u = 0; u < n; u++) {
           origStart.push(c);
           origEnd.push(c + ch.length);
         }
-        lower += l;
         c += ch.length;
+      }
+      if (origStart.length !== lower.length) {
+        parent.appendChild(document.createTextNode(text)); // 위치 표를 믿을 수 없으면 강조 생략
+        return;
       }
     }
     var idx = lower.indexOf(q);
@@ -179,6 +182,7 @@
   function storeErrorMessage(e, what) {
     var code = e && e.code;
     if (code === 'CONTEXT_INVALIDATED') return '확장 프로그램이 업데이트되었습니다 — 팝업을 다시 열어 주세요.';
+    if (code === 'SCHEMA_NEWER') return what + ' 실패 — 다른 기기의 더 새 버전이 저장한 목록입니다. 확장을 업데이트해 주세요.';
     if (code === 'QUOTA') {
       var fit = e && typeof e.fit === 'number' ? ' 지금은 약 ' + e.fit + '명까지 더 저장할 수 있습니다.' : '';
       return what + ' 실패 — 동기화 저장 공간(약 100KB)이 부족합니다.' + fit;
@@ -577,16 +581,24 @@
     if (IS_TAB_VIEW) {
       document.body.classList.add('fmkb-tab-view');
       if (PARAMS.get('action') === 'import') {
-        setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.');
-        if (els.importBtn) els.importBtn.focus();
+        setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.'); // 버튼 포커스는 목록을 읽은 뒤(활성화 후)
       }
     }
 
     // load()는 읽기를 1회 재시도한 뒤에도 실패하면 reject한다(이슈 #14). 빈 목록을 정상인 척
     // 보여 주지 않고 오류 상태로 멈춘다(가져오기·해제 비활성).
+    // 목록을 읽기 전엔 가져오기·내보내기를 막는다(중복 판정이 빈 목록 기준이 되거나 빈 파일을 내보내지 않게
+    // — 최종 리뷰 #23 M6).
+    if (els.importBtn) els.importBtn.disabled = true;
+    if (els.exportBtn) els.exportBtn.disabled = true;
     var loaded = typeof store.load === 'function' ? store.load() : Promise.resolve();
     Promise.resolve(loaded)
       .then(function () {
+        if (els.exportBtn) els.exportBtn.disabled = false;
+        if (els.importBtn) {
+          els.importBtn.disabled = false;
+          if (IS_TAB_VIEW && PARAMS.get('action') === 'import') els.importBtn.focus();
+        }
         refresh();
 
         // 라이브 동기(가산적 7번째 API onChange, 계약 C9): 팝업이 열려 있는 동안 외부

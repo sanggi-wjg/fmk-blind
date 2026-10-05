@@ -49,26 +49,30 @@ UID를 뽑은 작성자 앵커에서, 아래 **순서대로** 숨길 컨테이�
 - 대상 페이지: 보드 목록 + 게시글 본문 + 댓글 (`www.fmkorea.com` + `m.fmkorea.com`).
 - **미지원(범위 밖)**:
   - (없음 — PC 위젯형 목록도 2026-10-05부터 닉네임 폴백으로 처리, 이슈 #16)
-- **닉네임 폴백(UID 없는 목록)**: 모바일 목록과 PC 위젯형 목록(웹진 보기·핫딜·베스트·홈) 행은 아래 "목록 — 닉네임 폴백" 규칙으로 처리한다(2026-10-05, 이슈 #8·#16).
+- **닉네임 폴백(UID 없는 목록)**: 모바일 목록과 PC 위젯형 목록(웹진 보기·핫딜·베스트·홈) 행은 아래 "UID 없는 목록 — 닉네임 폴백" 규칙으로 처리한다(2026-10-05, 이슈 #8·#16).
 
 ## 모바일 `m.fmkorea.com` (실측 — 2026-07-08, 모바일 UA curl)
 
 > **정정 이력:** 이전 판 "모바일은 마크업 완전히 다름(`member_` 없음), 후속 TODO"는 실측으로 **부정확 판명**. 아래가 실측 결론이며, 위 판정 규칙(작성자 앵커·컨테이너 판정)은 **코드 변경 없이 모바일에도 그대로 적용**된다. `matches`에 `m.fmkorea.com`을 추가하는 것만으로 게시글·댓글이 커버된다.
 
 - **게시글 작성자**: PC와 **동일 패턴** `<a href='#popup_menu_area' class='member_{UID} member_plate'>`. 실측 조상 체인: `a.member_* < div.side < div.btm_area < div.board < div.rd_hd < #bd_capture < div.rd.rd_nav_style2 < div.bd.bd_mobile`. → **판정 규칙 ②**(`closest('.rd_hd, .top_area')` → `.rd`)가 모바일에서 그대로 매치. 숨김 컨테이너 = `div.rd`. **셀렉터 코드 변경 불요**(실측 근거: `m_article.html`·`m_article2.html`).
-- **목록 — 닉네임 폴백** (정정: 2026-10-05 실측, 이슈 #8 — 이전 "범위 밖" 판정은 목록에 닉네임이 표시되는 걸 놓쳐 차단 유저 글 제목이 노출되는 버그였음): 목록 행엔 숫자 `member_{UID}` 앵커가 **0개**지만 닉네임 텍스트는 있다. UID 규칙이 매치하지 않으므로 **차단 목록의 저장 닉네임(`store.list()[].nick`)과 대조**해 행을 숨긴다.
+- **목록**: UID가 없어 아래 "UID 없는 목록 — 닉네임 폴백" 규칙으로 처리한다(이슈 #8).
+- **댓글**: (정정 2026-10-05 실측) 현재 모바일 게시글 정적 HTML에 댓글이 PC와 같은 `li#comment_{srl}.fdb_itm`으로 **바로 포함**된다(베스트 댓글 `comment_N_`, 답글 `.re` 포함 — 표본 3개 글에서 33·38·50개). 판정 규칙 ①이 그대로 매치. 이후 AJAX 페이지 이동 등 삽입분은 `MutationObserver`(35-observer)가 처리. (이전 기록 "JS 지연 렌더(LazyFilter)"는 현재 마크업과 다름)
+- **리다이렉트**: 데스크톱 UA로 `m.` URL 접속 시 `www`로 리다이렉트(실브라우저 확인). `m.` 매치는 사실상 모바일 기기(Firefox Android) 전용.
+- **롱프레스**: Android(Firefox 포함)에서 롱프레스는 `contextmenu` 이벤트를 발화 → 40-contextmenu 기존 리스너가 그대로 동작할 구조. `preventDefault`의 네이티브 메뉴 억제 여부는 실기기 게이트.
+
+## UID 없는 목록 — 닉네임 폴백 (모바일 목록·PC 위젯형 목록)
+
+- **규칙** (정정: 2026-10-05 실측, 이슈 #8·#16 — 이전 "범위 밖" 판정은 목록에 닉네임이 표시되는 걸 놓쳐 차단 유저 글 제목이 노출되는 버그였음): 목록 행엔 숫자 `member_{UID}` 앵커가 **0개**지만 닉네임 텍스트는 있다. UID 규칙이 매치하지 않으므로 **차단 목록의 저장 닉네임(`store.list()[].nick`)과 대조**해 행을 숨긴다.
   - 행 셀렉터 `NICK_ROW` = `ol.bd_m_lst > li, .fm_best_widget > ul > li`
     - `ol.bd_m_lst`: 모바일 보드 목록 전용
     - `.fm_best_widget`: 모바일(`_bd_mobile`) `/best` + **PC(`_bd_pc`) 웹진 보기(`?listStyle=webzine`)·핫딜(`/hotdeal` 기본 보기)·베스트(`/best`, `/best2`)·홈** (PC 실측 2026-10-05, 이슈 #16 — 이 페이지들의 `member_` 앵커 0개, 행 중첩 없음)
-    - 보드 목록(유머 등, `listStyle` 무관 동일): `<div class="info"> … <span><i class="fa fa-user"></i> 닉네임</span> …` → `.info .fa-user`의 부모 span 텍스트
+    - 모바일 보드 목록(`ol.bd_m_lst`, 유머 등, `listStyle` 무관 동일): `<div class="info"> … <span><i class="fa fa-user"></i> 닉네임</span> …` → `.info .fa-user`의 부모 span 텍스트
     - 베스트(`/best`): `<span class="author"> / 닉네임</span>` → `.author` 텍스트에서 앞 `/ ` 제거
   - 닉네임 정규화(`normalizeNick`): 연속 공백 1개로 + trim. 저장 닉·행 닉 양쪽에 적용. 저장 닉은 본문 작성자 앵커 `textContent.trim()`이며 목록 표기와 동일함을 실측 확인(모바일·PC 동일).
   - 숨김: 행에 `.fmkb-hidden` + `data-fmkb-uid={매칭된 uid}` → 해제 시 기존 `unhideByUid`로 함께 복구.
   - **한계(감수)**: 차단 후 닉네임을 바꾼 유저는 목록에서 놓치고(본문·댓글은 UID라 계속 숨김), 그 옛 닉네임을 새로 쓰는 다른 유저는 목록에서 오차단될 수 있다. 저장 닉이 빈 문자열이면 매칭하지 않는다.
   - 공지 행은 닉 자리에 "공지"/"공동공지"(또는 관리자 닉)가 들어가 같은 규칙으로 판정된다. **`li.notice`로 공지를 제외하지 말 것** — `notice … pop1` 클래스가 일반 유저의 인기글 행에도 붙는다.
-- **댓글**: (정정 2026-10-05 실측) 현재 모바일 게시글 정적 HTML에 댓글이 PC와 같은 `li#comment_{srl}.fdb_itm`으로 **바로 포함**된다(베스트 댓글 `comment_N_`, 답글 `.re` 포함 — 표본 3개 글에서 33·38·50개). 판정 규칙 ①이 그대로 매치. 이후 AJAX 페이지 이동 등 삽입분은 `MutationObserver`(35-observer)가 처리. (이전 기록 "JS 지연 렌더(LazyFilter)"는 현재 마크업과 다름)
-- **리다이렉트**: 데스크톱 UA로 `m.` URL 접속 시 `www`로 리다이렉트(실브라우저 확인). `m.` 매치는 사실상 모바일 기기(Firefox Android) 전용.
-- **롱프레스**: Android(Firefox 포함)에서 롱프레스는 `contextmenu` 이벤트를 발화 → 40-contextmenu 기존 리스너가 그대로 동작할 구조. `preventDefault`의 네이티브 메뉴 억제 여부는 실기기 게이트.
 
 ## 변경 감지 시 재검증 절차
 
