@@ -37,9 +37,33 @@
       return hidden;
     },
 
+    // 닉네임 폴백: root(Element 또는 document) 자신·하위의 모바일 목록 행(NS.selectors.NICK_ROW)을
+    // 닉네임으로 판정해 숨긴다. uidForNick: (정규화 닉) => 차단 uid | null 주입.
+    // data-fmkb-uid 에 매칭된 uid 를 남기므로 해제 시 unhideByUid 로 그대로 복구된다. 숨긴 수 반환.
+    scanNickRows(root, uidForNick) {
+      if (!root || typeof uidForNick !== 'function') return 0;
+      const sel = NS.selectors.NICK_ROW;
+      const rows = [];
+      if (root.matches && root.matches(sel)) rows.push(root);
+      if (root.querySelectorAll) root.querySelectorAll(sel).forEach((row) => rows.push(row));
+
+      let hidden = 0;
+      rows.forEach((row) => {
+        const nick = NS.selectors.getRowNick(row);
+        if (!nick) return;
+        const uid = uidForNick(nick);
+        if (!uid) return;
+        row.classList.add(NS.HIDDEN_CLASS);
+        row.dataset[NS.UID_DATA_KEY] = uid;
+        hidden += 1;
+      });
+      return hidden;
+    },
+
     // 최초 로드 1회 전체 스캔. isBlocked: (uid) => boolean 주입.
+    // uidForNick(선택) 주입 시 UID 없는 모바일 목록 행도 닉네임 폴백으로 숨긴다.
     // 숨긴 컨테이너 수 반환.
-    scan(isBlocked) {
+    scan(isBlocked, uidForNick) {
       let hidden = 0;
       document.querySelectorAll(NS.AUTHOR_ANCHOR_SELECTOR).forEach((anchor) => {
         const uid = NS.selectors.extractUid(anchor);
@@ -47,6 +71,7 @@
         if (!isBlocked(uid)) return; // 차단 대상 아님
         if (hide.hideForAnchor(anchor, uid)) hidden += 1;
       });
+      hidden += hide.scanNickRows(document, uidForNick);
       return hidden;
     },
   };
