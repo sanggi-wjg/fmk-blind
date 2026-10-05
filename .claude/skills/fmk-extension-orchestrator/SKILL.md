@@ -1,151 +1,163 @@
 ---
 name: fmk-extension-orchestrator
-description: "FMK-Blind 크롬 확장(에펨코리아 유저 블라인드)의 구현·검증·유지보수를 에이전트 팀으로 조율하는 오케스트레이터. 확장 구현/MVP 빌드, content script·저장 계층·팝업 작성, manifest 구성, fmkorea 셀렉터 수정, 차단 기능 작업 시 사용. 후속 작업도 처리: 재실행, 업데이트, 수정, 보완, 부분 재실행(예: '팝업만 다시', '저장 계층만 수정'), 이전 결과 개선, TODO 기능 추가(MutationObserver·모바일·압축·내보내기·onChanged·아이콘 에셋), 코드 리뷰. 에펨/펨코/fmkorea 차단 확장 관련 요청 시 반드시 이 스킬을 사용할 것. 기능 단위는 **최신 main 기준 브랜치 생성 → 구현·검증 → PR 생성**까지를 1 작업 단위로 처리한다(머지는 사용자 몫)."
+description: "FMK-Blind 크롬 확장(에펨코리아 유저 블라인드, PC·모바일, Chrome·Firefox)의 구현·검증·유지보수를 에이전트 팀으로 조율하는 오케스트레이터. 확장 구현, content script·저장 계층·팝업 작성, manifest 구성, fmkorea 셀렉터 수정, 차단 기능 작업, 버그 수정(이슈 대응) 시 사용. 후속 작업도 처리: 재실행, 업데이트, 수정, 보완, 부분 재실행(예: '팝업만 다시', '저장 계층만 수정', '셀렉터만 고쳐'), 이전 결과 개선, TODO 기능 추가(저장 압축·차단 메모·자기 차단 가드·글 진입 안내문·인용 처리·PC 통합목록 닉네임 폴백), 코드 리뷰·QA 재검증. 에펨/펨코/fmkorea 차단 확장 관련 요청 시 반드시 이 스킬을 사용할 것. 기능 단위는 **최신 main 기준 브랜치 생성 → 구현·검증 → PR 생성**까지를 1 작업 단위로 처리한다(머지는 사용자 몫). 하네스 자체 점검·재구성은 harness 스킬 담당."
 ---
 
 # FMK-Extension Orchestrator
 
-FMK-Blind 크롬 확장의 에이전트 팀을 조율하여, 동작하는 MV3 확장(content script + 저장 계층 + 팝업)을 구현·검증·유지보수하는 통합 스킬.
+FMK-Blind 확장의 에이전트 팀을 조율하여, 동작하는 MV3 확장(content script + 저장 계층 + 팝업)을 구현·검증·유지보수하는 통합 스킬.
 
 ## 작업 단위: 브랜치 → 구현 → PR
-기능 개발 1건은 **하나의 git 작업 단위**다: 최신 `main`에서 브랜치 따기(**Phase 0.5**) → 팀 구현·검증(Phase 1~5) → 커밋·푸시·PR 생성(**Phase 6**). **PR에서 정지하고 머지는 사용자에게 맡긴다**(머지 시 `.github/workflows/release.yml`이 manifest 버전 기준으로 릴리즈를 자동 생성). 순수 질문/조회나 사용자가 현재 브랜치 작업을 명시한 경우는 git 단계를 생략한다.
+기능 개발 1건은 **하나의 git 작업 단위**다: 최신 `main`에서 브랜치 따기(**Phase 0.5**) → 구현·검증(Phase 1~5) → 커밋·푸시·PR 생성(**Phase 6**). **PR에서 정지하고 머지는 사용자에게 맡긴다**(머지 시 `.github/workflows/release.yml`이 manifest 버전 기준으로 릴리즈를 자동 생성). 순수 질문/조회나 사용자가 현재 브랜치 작업을 명시한 경우는 git 단계를 생략한다.
 
-## 실행 모드: 에이전트 팀
-저장 계층 `store.js`가 content script와 popup이 **공유하는 API 계약**이라, 두 구현자가 계약을 합의·협상해야 한다. 경계면 협업이 핵심이므로 팀 모드를 사용한다. 모든 에이전트는 `model: "opus"`.
+## 실행 모드: 혼합 (변경 범위로 선택)
+Phase 0에서 변경 범위를 보고 둘 중 하나를 고른다.
 
-> **커스텀 타입 폴백:** 팀원의 `agent_type`은 `.claude/agents/`의 커스텀 정의를 가리킨다. 환경이 TeamCreate에서 커스텀 타입을 받지 못하면, 해당 팀원을 `general-purpose`로 생성하고 prompt에 "`.claude/agents/{name}.md`를 Read해 역할·프로토콜을 따르라"를 넣어 동등하게 동작시킨다.
+| 모드 | 언제 | 구성 |
+|------|------|------|
+| **팀 모드** (지속형 에이전트 협업) | store 계약(`10-store.js` API·불변식)을 바꾸거나, 2개 이상 모듈(store+content/popup)에 걸친 기능 | 이름 있는 `Agent(name:)`를 한 메시지에서 병렬 실행 + `TaskCreate`/`TaskUpdate` 공유 작업 목록 + `SendMessage`. 계약 협상이 핵심이라 대화 맥락 유지가 필요 |
+| **직접 모드** (리더 구현 + 서브에이전트 검증) | 단일 모듈 버그 수정·셀렉터 보정·팝업 국소 수정·문서 | 리더(메인)가 직접 구현 → 코드 변경이면 `extension-qa`·`extension-reviewer`를 이름 없는 서브에이전트로 **한 메시지에서 병렬** 호출(결과만 받으면 됨). 문서·기계적 변경이면 서브에이전트 없이 Phase 6 인라인 리뷰 |
+
+판단이 애매하면 직접 모드로 시작하고, 구현 중 계약 변경이 필요해지면 팀 모드로 승격한다(storage-engineer를 이름 붙여 실행).
+
+**모델:** 모든 에이전트 `opus`. 다섯 역할 모두 코드 생성 또는 교차 검증·리뷰(깊은 추론, 범위 명확)라 v2 기준상 opus가 맞다. 장기 자율 계획은 리더(메인)가 맡으므로 하위에 fable은 쓰지 않는다.
+
+> **커스텀 타입 폴백:** `subagent_type`은 `.claude/agents/`의 커스텀 정의를 가리킨다. 환경이 커스텀 타입을 받지 못하면 `general-purpose`로 실행하고 prompt에 "`.claude/agents/{name}.md`를 Read해 역할·프로토콜을 따르라"를 넣어 동등하게 동작시킨다.
 
 ## 에이전트 구성
 
-| 팀원 | 에이전트 타입 | 역할 | 스킬 | 출력 |
+| 이름 | subagent_type | 역할 | 스킬 | 출력 |
 |------|-------------|------|------|------|
-| storage-engineer | storage-engineer (custom) | sync 샤딩 저장 계층 + API 계약 | sync-sharded-storage | `src/store.js`, `.claude/workspace/store-api-contract.md` |
-| content-engineer | content-engineer (custom) | content script: 추출·숨김·우클릭·토스트 | fmk-dom-selectors, chrome-mv3-extension | `src/content/*.js`, `src/content.css` |
-| popup-engineer | popup-engineer (custom) | 팝업 UI(목록/검색/해제/인원수) | chrome-mv3-extension | `src/popup/*` |
-| extension-qa | extension-qa (custom, 전체 도구·Bash 포함) | 경계면·manifest·셀렉터·샤딩 검증 | extension-qa-verification | `.claude/workspace/qa-report.md` |
-| extension-reviewer | extension-reviewer (custom, 전체 도구·Bash 포함) | 코드 리뷰: 정확성·보안·견고성·유지보수성·MV3 베스트프랙티스(아이콘 포함)·성능 (QA와 상보) | extension-code-review | `.claude/workspace/review-report.md` |
+| storage-engineer | storage-engineer | sync 샤딩 저장 계층 + API 계약 | sync-sharded-storage | `src/content/10-store.js`, `.claude/workspace/store-api-contract.md` |
+| content-engineer | content-engineer | content script: 추출·숨김·observer·닉 폴백·우클릭·토스트, manifest 소유 | fmk-dom-selectors, chrome-mv3-extension | `src/content/*.js`(10-store 제외), `src/content.css`, `manifest.json` |
+| popup-engineer | popup-engineer | 팝업(목록/검색/해제/인원수/내보내기·가져오기, Firefox 탭 보기) | chrome-mv3-extension | `src/popup/*` |
+| extension-qa | extension-qa | 경계면·manifest·셀렉터·샤딩 검증 | extension-qa-verification | `.claude/workspace/qa-report.md` |
+| extension-reviewer | extension-reviewer | 코드 리뷰: 정확성·보안·견고성·유지보수성·MV3·성능 (QA와 상보) | extension-code-review | `.claude/workspace/review-report.md` |
 
 ## 참조 문서 (항상 먼저 읽기)
 - `PLAN.md` — 확정된 설계 결정·검증된 DOM 사실·아키텍처
-- `TODO.md` — 후속 작업 범위(무엇을 v1에서 제외했는가)
+- `TODO.md` — 남은 작업 범위
+- `.claude/workspace/store-api-contract.md` — store API의 **최신·권위 계약**(스킬과 어긋나면 계약이 우선)
 
 ## 워크플로우
 
 ### Phase 0: 컨텍스트 확인 (후속 작업 지원)
-1. `.claude/workspace/` 존재 여부, `src/`·`manifest.json` 존재 여부 확인.
-2. 실행 모드 결정:
-   - **초기 실행**: `src/`·`manifest.json` 없음 → Phase 1로.
-   - **부분 재실행**: 사용자가 특정 모듈만 수정 요청(예: "팝업만", "저장 계층만", "셀렉터 수정") → 해당 팀원만 재호출, 다른 산출물은 보존. 이전 결과 경로를 프롬프트에 포함해 개선 반영 지시.
-   - **새 실행/대규모 변경**: 기존 `.claude/workspace/`를 `.claude/workspace_{타임스탬프}/`로 이동 후 Phase 1.
-   - **TODO 기능 추가**(MutationObserver·모바일·압축·내보내기·onChanged): 관련 팀원만 구성하고, 해당 기능을 TODO.md에서 제거(완료 반영)하도록 안내.
+1. `.claude/workspace/`, `src/`, `manifest.json` 존재 여부 확인.
+2. 실행 유형 결정:
+   - **부분 재실행**: 특정 모듈만 수정(예: "팝업만", "셀렉터 수정") → 직접 모드 또는 해당 에이전트만 실행. 다른 산출물은 보존하고 이전 결과 경로를 프롬프트에 넣어 개선만 반영.
+   - **TODO 기능 추가**: 관련 에이전트만 구성하고, 완료 시 `TODO.md`에서 체크.
+   - **대규모 재작성**: 기존 `.claude/workspace/`를 `.claude/workspace_{YYYYMMDD}/`로 옮긴 뒤 Phase 1. 단 `store-api-contract.md`는 최신·권위 계약이므로 새 `.claude/workspace/`에 **복사해 유지**한다(QA·리뷰 리포트만 보관 이동).
+3. 위 표로 **팀 모드/직접 모드**를 정한다.
 
 ### Phase 0.5: 브랜치 준비 (기능 단위의 시작)
 코드를 생산하는 기능/수정 작업은 구현 착수 **전에** 브랜치를 딴다.
-1. **선검사**: `git status`로 워킹트리 clean 확인. 더러우면 멈추고 사용자에게 방침 확인(커밋/스태시/포함).
+1. **선검사**: `git status`. 이번 작업과 무관한 미커밋 변경이 있으면 사용자에게 방침 확인(커밋/스태시/그대로 두고 스테이징에서 제외).
 2. **최신 main 기준**: `git fetch origin` → `git switch main` → `git pull --ff-only`. stale main에서 브랜치 따는 사고 방지.
-3. **브랜치 생성**: 변경 성격에 맞는 접두사로 `git switch -c <type>/<slug>` — `feat/`(기능)·`fix/`(버그)·`chore/`(빌드·문서·메타). slug는 kebab-case 요약(예: `feat/onchanged-live-sync`).
-4. **생략 조건**: 사용자가 현재 브랜치 작업을 명시했거나 순수 질문/조회인 경우. 부분 재실행도 동일하게 브랜치로 묶는다.
+3. **브랜치 생성**: `git switch -c <type>/<slug>` — `feat/`(기능)·`fix/`(버그)·`chore/`(빌드·문서·메타). slug는 kebab-case 요약(예: `fix/mobile-list-nick-hide`).
+4. **생략 조건**: 사용자가 현재 브랜치 작업을 명시했거나 순수 질문/조회인 경우. 부분 재실행도 브랜치로 묶는다.
 
 ### Phase 1: 준비
-1. `PLAN.md`·`TODO.md`를 읽어 범위·결정을 확정.
-2. `.claude/workspace/` 생성(초기) 또는 보관 이동 후 재생성(새 실행).
-3. 작업 범위를 TaskCreate용으로 정리.
+1. `PLAN.md`·`TODO.md`·계약을 읽어 범위·결정을 확정.
+2. `.claude/workspace/`가 없으면 생성. 이전 작업의 `.claude/workspace/freeze.sha`가 남아 있으면 삭제한다(낡은 해시로 대조하는 오탐 방지).
+3. 작업 목록을 정리(팀 모드면 TaskCreate용).
 
-### Phase 2: 팀 구성
-1. 팀 생성:
-   ```
-   TeamCreate(team_name: "fmk-ext-team", members: [
-     { name: "storage-engineer", agent_type: "storage-engineer", model: "opus",
-       prompt: "sync-sharded-storage 스킬과 PLAN.md를 따라 src/store.js와 .claude/workspace/store-api-contract.md를 작성. 착수 즉시 API 계약을 공표하고 content/popup에 통지." },
-     { name: "content-engineer", agent_type: "content-engineer", model: "opus",
-       prompt: "fmk-dom-selectors·chrome-mv3-extension 스킬을 따라 content script와 content.css를 작성. store 계약 통지 후 그 API만 사용." },
-     { name: "popup-engineer", agent_type: "popup-engineer", model: "opus",
-       prompt: "chrome-mv3-extension 스킬을 따라 팝업(목록/검색/해제/인원수)을 작성. store 계약 통지 후 그 API만 사용." },
-     { name: "extension-qa", agent_type: "extension-qa", model: "opus",
-       prompt: "extension-qa-verification 스킬로 각 모듈 완성 직후 점진적으로 경계면·manifest·셀렉터·샤딩을 검증하고 .claude/workspace/qa-report.md에 증거와 함께 기록." }
-   ])
-   ```
-2. 작업 등록(의존성 명시):
-   ```
-   TaskCreate(tasks: [
-     { title: "store API 계약 확정", assignee: "storage-engineer" },
-     { title: "store.js 구현", assignee: "storage-engineer", depends_on: ["store API 계약 확정"] },
-     { title: "content script 구현", assignee: "content-engineer", depends_on: ["store API 계약 확정"] },
-     { title: "popup 구현", assignee: "popup-engineer", depends_on: ["store API 계약 확정"] },
-     { title: "manifest.json 작성", assignee: "content-engineer" },
-     { title: "경계면·셀렉터·샤딩 검증", assignee: "extension-qa", depends_on: ["store.js 구현","content script 구현","popup 구현"] }
-   ])
-   ```
+### Phase 2: 실행 구성
 
-### Phase 3: 계약 우선 → 팬아웃 구현 → 점진 검증
-**실행 방식:** 팀원 자체 조율
-1. storage-engineer가 **먼저** `store-api-contract.md`를 확정하고 content·popup에 SendMessage로 통지(이 통지 전까지 두 엔지니어는 계약 의존 작업을 시작하지 않는다).
-2. 계약 확정 후 content·popup이 병렬로 구현. 계약에 부족한 게 있으면 storage-engineer에 SendMessage로 요청 → 계약 갱신·재통지.
-3. 각 모듈 완료 시 extension-qa에 검증 요청. QA는 경계면 불일치 발견 즉시 해당 엔지니어에게 직접 SendMessage(위치·증거 포함).
-4. 리더는 TaskGet으로 진행률 모니터링, 막힌 팀원에 개입.
+**실행 모드: 팀 모드일 때 (지속형 에이전트)**
+1. 필요한 에이전트만 **한 메시지에서 병렬** 실행한다(전원 필수 아님):
+   ```
+   Agent(name: "storage-engineer", subagent_type: "storage-engineer", model: "opus",
+     prompt: "sync-sharded-storage 스킬·PLAN.md·계약을 따라 src/content/10-store.js와 .claude/workspace/store-api-contract.md를 갱신. 계약 변경분을 먼저 확정하고 content-engineer/popup-engineer에 SendMessage로 통지. 첫 보고에 실제 사용 가능한 도구 목록을 적을 것.")
+   Agent(name: "content-engineer", subagent_type: "content-engineer", model: "opus",
+     prompt: "fmk-dom-selectors·chrome-mv3-extension 스킬을 따라 content script를 수정. storage-engineer의 계약 통지 후 그 API만 사용. ...")
+   Agent(name: "popup-engineer", subagent_type: "popup-engineer", model: "opus", prompt: "...")
+   ```
+2. 공유 작업 목록에 의존성과 함께 등록(`TaskCreate`): 계약 확정 → (store 구현 ‖ content 구현 ‖ popup 구현) → QA 검증 → 리뷰.
+3. QA·리뷰는 구현 모듈이 나오는 대로 Phase 3에서 **리더가** 투입한다(처음부터 띄워 대기시키지 않는다). 엔지니어는 QA에 직접 요청하지 않고 리더에게 투입을 요청한다.
+
+**실행 모드: 직접 모드일 때 (리더 구현)**
+1. 리더가 관련 스킬(fmk-dom-selectors·chrome-mv3-extension·sync-sharded-storage)을 로드해 직접 구현한다.
+2. Phase 4에서 QA·리뷰 서브에이전트를 부른다.
+
+### Phase 3: 계약 우선 → 구현 → 점진 검증 (팀 모드)
+1. storage-engineer가 **먼저** 계약 변경을 확정하고 소비자에게 `SendMessage`로 통지한다. 통지 전에는 content·popup이 계약 의존 작업을 시작하지 않는다.
+2. **계약 동결**: 통지 이후 계약 변경은 storage-engineer가 재통지할 때만 허용한다(완료 보고 뒤 다른 에이전트 질문에 답하다 계약을 조용히 고치는 것 방지).
+3. content·popup이 병렬 구현. 계약에 부족한 게 있으면 storage-engineer에 `SendMessage`로 요청 → 계약 갱신·재통지.
+4. 모듈이 완료되면 리더가 `extension-qa`를 이름 붙여 실행(`Agent(name: "extension-qa", ...)`)해 해당 모듈부터 점진 검증한다. QA는 불일치를 발견하면 해당 엔지니어에게 직접 `SendMessage`(위치·증거 포함).
+5. 리더는 작업 목록으로 진행률을 보고, 막힌 에이전트에 `SendMessage`로 개입한다.
 
 ### Phase 4: 통합·최종 검증
-1. 모든 작업 완료 대기(TaskGet).
-2. 산출물이 프로젝트 루트의 올바른 경로(`manifest.json`, `src/**`)에 배치됐는지 확인.
-3. extension-qa의 `qa-report.md`에서 blocker/major 잔여 항목을 확인 → 있으면 해당 팀원에 수정 재할당(최대 2회).
-4. 최종 구조 검증: manifest의 `js` 목록과 실제 파일 일치, store 계약과 소비자 일치.
-5. **코드 리뷰(extension-reviewer)**: QA의 통합 검증이 그린이면(또는 사용자가 리뷰를 명시 요청하면) extension-reviewer를 구성해 정확성·보안·견고성·유지보수성·MV3 베스트프랙티스·성능을 리뷰한다. `.claude/workspace/review-report.md`의 blocker/major는 해당 엔지니어에 수정 재할당(최대 2회). QA(통합/계약)와 리뷰어(코드 품질)는 상보적이며 중복 지적을 피한다.
-6. 사용자에게 "크롬 → 확장 관리 → 압축해제된 확장 로드"로 수동 테스트하는 법을 안내.
+1. 산출물이 올바른 경로(`manifest.json`, `src/**`)에 있는지 확인.
+2. **QA·리뷰**: 팀 모드면 이미 실행 중인 extension-qa의 `qa-report.md`를 확인하고, 그린이면 extension-reviewer를 실행. 직접 모드면 코드 변경일 때만 `extension-qa`와 `extension-reviewer`를 **한 메시지에서 병렬 서브에이전트**로 호출한다. prompt에 변경 파일 목록을 넣고, 리뷰어에게는 "이번 실행의 qa-report는 병렬 생성 중이니 근거로 쓰지 말고 계약 일치도 직접 확인"을 명시한다. 문서·기계적 변경은 서브에이전트를 생략하고 Phase 6 인라인 리뷰로 간다.
+3. blocker/major는 해당 엔지니어(직접 모드면 리더)가 수정 → **QA와 리뷰를 다시 실행**해 재검증(최대 2회). QA 그린 이후 코드가 바뀌면 리뷰 지적 수정이라도 QA 재검증을 거친다(팀 모드는 extension-qa에 `SendMessage`, 직접 모드는 재호출).
+4. **산출물 동결**: 최종 QA·리뷰가 그린이면 검증한 파일의 해시를 기록한다 — `shasum -a 256 manifest.json src/**/*.* src/*.css icons/*.png .claude/workspace/store-api-contract.md > .claude/workspace/freeze.sha`. **Phase 6-2(버전 범프 전)**에 `shasum -a 256 -c .claude/workspace/freeze.sha`로 대조하고, 불일치면 바뀐 파일을 재검증한 뒤 진행한다(완료 보고 뒤 다른 에이전트 요청으로 조용히 수정되는 것 방지). `freeze.sha`는 실행별 임시 산출물이라 커밋하지 않는다(`.gitignore` 등록).
+5. 최종 구조 검증: manifest `js` 목록과 실제 파일 일치, store 계약과 소비자(content·popup) 호출 일치.
+6. **실브라우저 게이트**: 저장 계층·다중 컨텍스트·팝업 생명주기·브라우저별 차이가 걸린 변경은 mock/jsdom PASS로 단정하지 않는다(거짓 PASS 전례). 가능하면 실 Firefox 헤드리스(Selenium, 임시 애드온)나 실 Chrome으로 직접 검증하고, 불가하면 사용자에게 실브라우저 확인 절차를 안내하고 PR 체크리스트에 미결로 남긴다. 모바일 런타임은 사용자 실기기 게이트.
 
 ### Phase 5: 정리
-1. 팀원 종료(SendMessage) → TeamDelete.
-2. `.claude/workspace/` 보존(계약·QA 리포트는 감사 추적용).
-3. 결과 요약 + 남은 TODO 보고. 완료한 TODO 항목은 `TODO.md`에서 체크/제거.
+1. 팀 모드 에이전트는 작업이 끝나면 스스로 종료한다. 남아 있는 백그라운드 작업만 `TaskStop`으로 정리한다.
+2. `.claude/workspace/` 보존(계약·QA·리뷰 리포트는 감사 추적용).
+3. 완료한 TODO 항목은 `TODO.md`에서 체크, 결과 요약 + 남은 TODO 보고.
 
 ### Phase 6: 브랜치 PR 마감 (기능 단위의 끝)
 Phase 0.5에서 브랜치를 땄다면, **커밋 전에 반드시 리뷰 게이트를 통과**한 뒤 진행한다.
 1. **리뷰 게이트 (커밋 전 필수 · 생략 금지)**: 어떤 변경도 **리뷰 없이 커밋하지 않는다**.
-   - 팀 작업이면 Phase 4의 `extension-reviewer` 리뷰로 충족. 팀을 안 거친 직접 변경(부분 수정·manifest·설정·문서 등)은 **여기서** 리뷰한다.
+   - Phase 4 리뷰로 충족. Phase 4를 거치지 않은 직접 변경(manifest·설정·문서 등)은 **여기서** 리뷰한다.
    - 리뷰 주체(비례 적용): **실질 코드 변경 → `extension-reviewer` 에이전트**(독립 시각, 특히 store·다중 컨텍스트·보안). **사소·기계적 변경(한 줄 설정·문서·주석) → 오케스트레이터 인라인 리뷰**.
    - 판정: **blocker/major가 있으면 커밋하지 않는다** → 수정 후 재리뷰하거나, 사용자에게 보고해 **커밋 여부를 사용자가 결정**하게 한다. minor는 기록 후 진행 가능.
-   - **문서 드리프트도 리뷰 대상**: 이번 변경이 기존 스킬·계약(`store-api-contract.md`)·`PLAN.md`·`README.md`·`TODO.md` 기술과 어긋나면 같은 PR에서 갱신한다(문서 항상 최신 = 드리프트 0).
+   - **문서 드리프트도 리뷰 대상**: 이번 변경이 스킬·에이전트 정의·계약(`store-api-contract.md`)·`PLAN.md`·`README.md`·`TODO.md` 기술과 어긋나면 같은 PR에서 갱신한다(드리프트 0).
    - 리뷰 verdict(이슈 목록 포함)를 **사용자에게 보고**한 뒤 다음 단계로.
-2. **검증 게이트**: 저장 계층·다중 컨텍스트(onChanged 등) 변경은 mock/로직 테스트만으로 PASS 단정 금지 — **실브라우저가 최종 게이트**(거짓 PASS 전례). 고위험 변경은 PR 생성 전 사용자 실브라우저 확인을 권장하거나, PR 본문 체크리스트에 "실브라우저 검증"을 미결로 명시.
-3. **버전 범프 정책**: 릴리즈가 필요한 변경이면 `manifest.json`의 `version`을 올린다(semver). `release.yml`이 버전 기준으로 릴리즈를 만들므로 **안 올리면 머지해도 릴리즈가 안 생긴다**. 문서/내부 산출물만 바뀌면 생략 가능.
-4. **커밋**: `git add -A`(`.gitignore`로 zip·`settings.local.json` 제외 확인) → 한국어 요약 + 본문(변경·검증 결과). 메시지 끝에 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+2. **검증 게이트**: 이번 실행이 `freeze.sha`를 만들었다면(Phase 4-4) 버전 범프 **전에** 대조해 통과했는지, Phase 4의 실브라우저 게이트 결과를 확인한다. 미결이면 PR 본문 체크리스트에 "실브라우저 검증"을 미결로 명시.
+3. **버전 범프 정책**: 릴리즈가 필요한 변경이면 `manifest.json`의 `version`을 올린다(semver: 기능=minor, 수정=patch). `release.yml`이 버전 기준으로 릴리즈를 만들므로 **안 올리면 머지해도 릴리즈가 안 생긴다**. 문서/하네스만 바뀌면 생략.
+4. **커밋**: 이번 작업 파일만 스테이징(무관한 미커밋 변경·zip·`settings.local.json` 제외 확인) → 한국어 요약 + 본문(변경·검증 결과). 메시지 끝에는 **세션이 지시하는 attribution(`Co-Authored-By`) 라인을 그대로** 붙인다(모델명 하드코딩 금지 — 모델이 바뀌면 드리프트).
 5. **푸시**: `git push -u origin <branch>`.
-6. **PR 생성**: `gh pr create --base main --head <branch>` + 템플릿 본문 — `## 요약` / `## 변경` / `## 검증`(리뷰·QA·테스트·실브라우저) / `## 머지 전 확인`(저장소 Actions 쓰기 권한, 버전 범프). 본문 끝에 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-7. **PR에서 정지** — 자동 머지 금지(머지는 사용자 몫). 머지 시 `release.yml`이 이어받아 `v{version}` 릴리즈 + zip을 만든다.
+6. **PR 생성**: `gh pr create --base main --head <branch>` + 템플릿 본문 — `## 요약` / `## 변경` / `## 검증`(리뷰·QA·테스트·실브라우저) / `## 머지 전 확인`(버전 범프, 실기기·실브라우저 미결 항목). 이슈 대응이면 `Closes #N`. 본문 끝에 세션이 지시하는 PR attribution 라인.
+7. **PR에서 정지** — 자동 머지 금지(머지는 사용자 몫). 머지 시 `release.yml`이 `v{version}` 릴리즈 + zip을 만든다.
 8. PR URL을 사용자에게 보고.
 
 ## 데이터 흐름
 ```
 storage-engineer → store-api-contract.md ──SendMessage──> content-engineer / popup-engineer
         │                                                         │
-   src/store.js                                          src/content/* , src/popup/*
-        └──────────────── extension-qa: 경계면 교차 비교 ─────────┘
+ src/content/10-store.js                         src/content/* , src/popup/* , manifest.json
+        └──────────── extension-qa: 경계면 교차 비교 ─────────────┘
                                    ↓
-                          .claude/workspace/qa-report.md → 리더 통합 → 루트 배치
+   팀 모드:  qa-report.md → extension-reviewer → review-report.md
+   직접 모드: extension-qa ‖ extension-reviewer (병렬, 리뷰어는 이번 qa-report 미참조)
+                                   ↓
+                리더 통합 → freeze.sha 기록 → Phase 6 PR
 ```
 
 ## 에러 핸들링
 | 상황 | 전략 |
 |------|------|
-| storage 계약 지연으로 content/popup 대기 | 리더가 storage-engineer에 우선순위 지시(계약 먼저, 구현 나중) |
-| QA가 경계면 불일치 발견 | 해당 엔지니어에 즉시 재할당, 1~2회 수정 루프, 미해결 시 리포트에 명시 |
-| 팀원 1명 실패/중지 | 리더 감지 → 상태 확인 → 재시작 또는 작업 재할당 |
-| fmkorea 접근 불가(QA 셀렉터 검증) | 정적 분석으로 대체, "라이브 미검증" 명시 |
-| 팀원 과반 실패 | 사용자에게 알리고 진행 여부 확인 |
+| storage 계약 지연으로 content/popup 대기 | 리더가 storage-engineer에 `SendMessage`로 우선순위 지시(계약 먼저, 구현 나중) |
+| QA/리뷰가 blocker·major 발견 | 해당 엔지니어에 재할당, 최대 2회 수정 루프, 미해결 시 리포트·사용자 보고에 명시 |
+| 에이전트 무응답·스톨 | `SendMessage`로 상태 확인·재지시 1회 → 그래도 실패하면 같은 subagent_type을 새 이름으로 실행하고 필요한 맥락(변경 파일·계약·이전 리포트 경로)을 prompt로 넘김 |
+| 재실행해도 같은 실패(사용량 한도·인증 만료·권한 거부·소켓/인프라 오류 반복) | 재시도하지 않는다. 부분 산출물을 열어 실제 진행 범위를 확인하고, 리더가 직접 모드로 전환해 마무리. 에이전트의 판단(왜 그렇게 했는지)은 추측해 채우지 않고 리포트에 "에이전트 미완, 리더 대행"으로 기록 |
+| fmkorea 접근 불가(셀렉터 라이브 검증) | 정적 분석·저장된 실마크업으로 대체, "라이브 미검증" 명시 |
+| 에이전트 과반 실패 | 사용자에게 알리고 진행 여부 확인 |
 
 ## 테스트 시나리오
 
-### 정상 흐름 (기능 추가 예: onChanged)
-1. 사용자: "onChanged 실시간 반영 추가해줘".
-2. Phase 0.5: 최신 main 확인 → `git switch -c feat/onchanged-live-sync`.
-3. Phase 1~2: 관련 팀원 구성 + 작업 등록.
-4. Phase 3: 계약 갱신·공표 → 병렬 구현 → QA 점진 검증.
-5. Phase 4: 정합성 + 코드 리뷰(blocker/major 0), 수동/실브라우저 테스트 안내.
-6. Phase 5: 팀 정리, TODO 체크.
-7. Phase 6: 검증 그린 확인 → manifest 버전 범프 → 커밋 → 푸시 → `gh pr create`(템플릿 본문) → **PR URL 보고, 머지는 사용자**.
-8. 예상 결과: PR 생성 완료. 사용자가 머지하면 `release.yml`이 `v{version}` 릴리즈 + zip 자동 생성.
+### 정상 흐름 A — 팀 모드 (계약 변경 기능: 저장 압축 Q5)
+1. 사용자: "차단 목록 압축 저장 추가해줘".
+2. Phase 0: store 계약·저장 레이아웃 변경 → 팀 모드. Phase 0.5: `git switch -c feat/storage-compression`.
+3. Phase 2: storage-engineer·content-engineer·popup-engineer를 한 메시지에서 병렬 실행, 작업 목록 등록.
+4. Phase 3: storage-engineer가 `bl_meta.ver` 상향·마이그레이션 계약 확정 → 통지 → 소비자 영향 확인 → 모듈별 QA.
+5. Phase 4: QA 그린 → reviewer MERGE, 실브라우저 게이트(마이그레이션은 실 브라우저 필수).
+6. Phase 6: 버전 범프(minor) → 커밋 → 푸시 → PR → URL 보고, 머지는 사용자.
+
+### 정상 흐름 B — 직접 모드 (단일 모듈 수정: 셀렉터 보정)
+1. 사용자: "PC 베스트 목록에서도 닉네임으로 숨겨줘".
+2. Phase 0: content만 변경, 계약 무변경 → 직접 모드. `git switch -c feat/pc-best-nick-fallback`.
+3. 리더가 fmk-dom-selectors 스킬로 실측 후 `20-selectors.js`·`30-hide.js` 수정.
+4. Phase 4: extension-qa·extension-reviewer를 한 메시지에서 병렬 서브에이전트 호출 → 그린.
+5. Phase 6: 버전 범프(minor) → PR.
 
 ### 에러 흐름
-1. Phase 3에서 content가 `store.block(uid)` 대신 존재하지 않는 `store.add(uid)`를 호출.
-2. extension-qa가 경계면 교차 비교로 불일치 발견 → content-engineer에 증거와 함께 SendMessage.
+1. 팀 모드 Phase 3에서 content-engineer가 계약에 없는 `store.add(uid)`를 호출.
+2. extension-qa가 경계면 교차 비교로 불일치 발견 → content-engineer에 증거와 함께 `SendMessage`.
 3. content-engineer가 계약대로 `store.block`으로 수정 → QA 재검증 통과.
-4. 최종 보고서에 "경계면 1건 수정 후 통과" 기록.
+4. 도중 popup-engineer가 소켓 오류로 두 번 멈춤 → 재시도하지 않고 리더가 직접 모드로 popup 수정 마무리, 리포트에 "에이전트 미완, 리더 대행" 기록.
+5. 최종 보고에 "경계면 1건 수정 후 통과, popup 리더 대행" 기록.

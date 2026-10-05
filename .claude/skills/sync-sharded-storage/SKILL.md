@@ -1,11 +1,11 @@
 ---
 name: sync-sharded-storage
-description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계층 설계와 store.js API 계약. 메모리 맵, bl_meta 버전, bl_0..N 청크 분할(8KB/100KB 제약), 즉시 영속화(awaitable; 실패 시 디바운스 재시도), stale 청크 정리, block/unblock/isBlocked/list/count + onChange(라이브 동기) API를 정의. 저장·동기화·샤딩·차단목록 영속화·store API 작업 시 반드시 이 스킬을 사용할 것."
+description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계층 설계와 store(src/content/10-store.js) API 계약. 메모리 맵, bl_meta 버전, bl_0..N 청크 분할(8KB/100KB 제약), 즉시 영속화(awaitable; 실패 시 디바운스 재시도), stale 청크 정리, load/block/unblock/isBlocked/list/count + onChange(라이브 동기)·importMany(배치 가져오기) API를 정의. 저장·동기화·샤딩·차단목록 영속화·store API 작업 시 반드시 이 스킬을 사용할 것."
 ---
 
 # sync-sharded-storage — 차단 목록 sync 샤딩 저장 계층
 
-차단 목록을 `chrome.storage.sync`에 저장하되, 단일 키의 8KB 한계를 넘어 **전체 100KB를 활용**하도록 샤딩한다. content script와 popup이 **같은 `store.js` 파일을 공유**한다(상태는 chrome.storage.sync로 동기화).
+차단 목록을 `chrome.storage.sync`에 저장하되, 단일 키의 8KB 한계를 넘어 **전체 100KB를 활용**하도록 샤딩한다. content script와 popup이 **같은 `src/content/10-store.js` 파일을 공유**한다(상태는 chrome.storage.sync로 동기화).
 
 ## sync 제약 (반드시 준수)
 - 전체 용량 ~100KB(102,400B), **항목당 ~8KB(8,192B)**, 최대 512 항목.
@@ -19,7 +19,7 @@ description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계�
 
 ## 직렬화·청킹 규칙
 1. 메모리 맵을 항목 배열 `[[uid, {nick, addedAt}], ...]`로 직렬화(JSON).
-2. 항목 단위로 누적하며 청크 1개가 ~7.5KB(안전 마진)를 넘기 직전에 끊어 다음 청크로.
+2. 항목 단위로 누적하며 청크 1개가 `CHUNK_BUDGET`(7,168B = 7KB, 8KB 대비 안전 마진)을 넘기 직전에 끊어 다음 청크로.
 3. 각 청크를 `bl_{i}`에 `JSON.stringify`로 저장.
 4. **stale 청크 정리**: 이전보다 청크 수가 줄면 남는 `bl_{k}`(k ≥ 새 청크 수)를 `chrome.storage.sync.remove`로 삭제(유령 데이터 방지).
 5. 총 용량이 100KB에 임박하면 콘솔 경고(향후 압축 TODO 안내).
@@ -30,7 +30,7 @@ description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계�
 - `bl_0..N`을 인덱스 순으로 이어붙여 파싱 → 메모리 맵 복원.
 - 파싱 실패 청크는 건너뛰고 경고(부분 복원 허용).
 
-## store.js API 계약 (content·popup 공유)
+## store API 계약 (content·popup 공유, `src/content/10-store.js`)
 이 시그니처를 **계약으로 고정**한다. 변경 시 두 소비자에게 통지한다.
 ```js
 // 전역: window.FMKBlind.store
@@ -42,11 +42,14 @@ const store = {
   list(),                  // [{ uid, nick, addedAt }] (addedAt desc 정렬 권장)
   count(),                 // number
   onChange(cb),            // (가산적 7번째) 외부 sync 변경 라이브 구독 → unsubscribe. cb({added, removed})
+  async importMany(items), // (가산적 8번째, C10) 메모리 일괄 반영 후 1회 flush → {added, skipped, invalid}. throw 없음
 };
 ```
 - `uid`는 문자열로 통일(앵커에서 추출한 숫자열 그대로).
 - `block`은 이미 있으면 무시(중복 추가 금지), nick은 최신값으로 갱신 허용.
 - `block`/`unblock`은 **즉시 영속화**한다(반환 Promise = `chrome.storage.sync` 쓰기 완료). 메모리는 반환 전 즉시 반영되어 `isBlocked`가 곧바로 정확하다. 디바운스(500ms)는 **쓰기 실패 재시도 경로에서만** 쓰고, **언로드 자동 flush(`pagehide`/`visibilitychange`)는 두지 않는다**(stale 탭이 옛 맵을 되쓰는 resurrection 방지).
+- **배치 가져오기(C10)**: 대량 항목은 항목별 `block()` 대신 `importMany`로 넣는다(레이트리밋). 새 uid만 추가, 기존 uid는 로컬 유지·스킵, 비정상 항목은 invalid 집계. added 0이면 쓰기 없이 resolve.
+- **API 추가 원칙**: 6 API는 FROZEN. 새 기능은 **가산적** API로만 추가하고 계약 문서에 불변식 번호(C11~)를 부여한다.
 - **라이브 동기(C9)**: `onChange`는 `chrome.storage.onChanged`로 외부(다른 탭/팝업/기기) 변경을 **외부 델타만 reconcile**(로컬 미영속 항목 보존)해 메모리에 반영하고 구독자에 통지한다. 핸들러는 읽기 전용(쓰기 없음), persist와 단일 직렬화 큐로 순차 실행. **최신·권위 계약은 `.claude/workspace/store-api-contract.md`**(이 스킬과 어긋나면 계약이 우선).
 
 ## 에러 핸들링

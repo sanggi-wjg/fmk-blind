@@ -1,6 +1,6 @@
 ---
 name: extension-qa-verification
-description: "FMK-Blind 크롬 확장의 통합 검증 방법론. content script·store.js·popup의 경계면 계약 교차 비교, manifest 정합성, fmkorea 실제 HTML 대비 셀렉터 유효성, 샤딩 경계(8KB/100KB), 엣지 케이스 체크리스트. QA·검증·테스트·정합성·경계면·셀렉터 재검증 작업 시 반드시 이 스킬을 사용할 것."
+description: "FMK-Blind 크롬 확장의 통합 검증 방법론. content script·store(src/content/10-store.js)·popup의 경계면 계약 교차 비교, manifest 정합성, fmkorea 실제 HTML 대비 셀렉터 유효성, 샤딩 경계(8KB/100KB), 엣지 케이스 체크리스트. QA·검증·테스트·정합성·경계면·셀렉터 재검증 작업 시 반드시 이 스킬을 사용할 것."
 ---
 
 # extension-qa-verification — 확장 통합 검증 방법론
@@ -12,17 +12,19 @@ description: "FMK-Blind 크롬 확장의 통합 검증 방법론. content script
 
 | 경계 | 확인 |
 |------|------|
-| store.js ↔ content | content가 호출하는 `store.block/unblock/isBlocked` 시그니처가 store 정의와 일치하는가 |
-| store.js ↔ popup | popup이 쓰는 `store.list()` 반환 필드(`uid/nick/addedAt`)가 store 출력과 일치하는가 |
-| selectors ↔ hide | selectors가 돌려준 컨테이너 타입을 hide가 그대로 숨기는가 |
+| store ↔ content | content가 호출하는 `store.block/unblock/isBlocked/onChange` 시그니처가 `10-store.js` 정의·계약과 일치하는가 |
+| store ↔ popup | popup이 쓰는 `store.list()` 반환 필드(`uid/nick/addedAt`), `importMany` 반환(`added/skipped/invalid`)이 store 출력과 일치하는가 |
+| selectors ↔ hide ↔ observer | selectors가 돌려준 컨테이너·`NICK_ROW` 판정을 hide(`scan`/`scanNickRows`)와 observer(삽입 노드)가 동일하게 적용하는가 |
+| main 색인 ↔ 닉 폴백 | 99-main의 닉→uid 색인이 block/unblock/onChange 때 무효화·재구성되는가 |
 
 불일치는 추측이 아니라 **파일·라인 + 양쪽 스니펫**으로 증거를 남긴다.
 
 ## 2. manifest 정합성
 - `manifest_version: 3`, `permissions`가 `["storage"]`뿐인가(host_permissions/scripting/tabs 없음).
-- `content_scripts.matches`가 `https://www.fmkorea.com/*`인가, `js` 배열 파일이 **모두 실재**하는가(경로 오타 검출).
+- `content_scripts.matches`가 `https://www.fmkorea.com/*`·`https://m.fmkorea.com/*` 둘 다인가, `js` 배열 파일이 **모두 실재**하는가(경로 오타 검출).
 - `action.default_popup` 경로가 실재하는가.
-- `js` 로드 순서상 `store.js`가 이를 쓰는 파일보다 앞에 오는가.
+- `js` 로드 순서상 `00-namespace.js` → `10-store.js`가 이를 쓰는 파일보다 앞에 오는가(숫자 접두사 순서 = 배열 순서).
+- Chrome 전용 `key`·Firefox 전용 `browser_specific_settings.gecko`가 유지되는가.
 
 ## 3. 셀렉터 라이브 재검증
 가정만으로 통과시키지 않는다. 실제 HTML을 받아 대조한다:
@@ -33,7 +35,7 @@ curl -sL -A "$UA" "https://www.fmkorea.com/index.php?mid=humor" -o /tmp/list.htm
 grep -oE "member_[0-9]+" /tmp/list.html | head      # 목록에 UID 앵커 존재?
 grep -oE "id=\"comment_[0-9]+\"|class=\"rd " /tmp/doc.html | head  # 댓글 li / .rd 존재?
 ```
-코드의 `member_(\d+)`·`li[id^="comment_"]`·`.rd`·`closest('tr, li')` 가정이 실제와 맞는지 확인. 접근 실패 시 "라이브 미검증"으로 명시(통과 처리 금지).
+코드의 `member_(\d+)`·`li[id^="comment_"]`·`.rd`·`closest('tr, li')` 가정이 실제와 맞는지 확인. 모바일은 모바일 UA로 `m.fmkorea.com` 목록(`ol.bd_m_lst > li`)·`/best`를 받아 `NICK_ROW`·닉 추출을 확인한다(데스크톱 UA는 www로 리다이렉트됨). 접근 실패 시 "라이브 미검증"으로 명시(통과 처리 금지). 셀렉터 사실의 단일 출처는 `fmk-dom-selectors` 스킬.
 
 ## 4. 샤딩 경계
 - 청크 직렬화가 8KB를 넘지 않는가(경계 케이스: 긴 닉네임 다수).
@@ -46,7 +48,11 @@ grep -oE "id=\"comment_[0-9]+\"|class=\"rd " /tmp/doc.html | head  # 댓글 li /
 - 빈 차단 목록에서 팝업이 깨지지 않는가.
 - 우클릭이 작성자 앵커 위에서만 메뉴를 띄우고, 그 외 영역은 기본 메뉴를 유지하는가.
 - 차단 직후 현재 탭에서 해당 노드가 즉시 `.fmkb-hidden` 되는가.
-- 팝업 해제는 storage만 갱신하고, 열린 탭은 새로고침 후 반영됨이 안내되는가(MVP 제약).
+- 팝업 해제/차단이 열린 탭에 새로고침 없이 반영되는가(`onChange` C9 — 실브라우저 게이트).
+- AJAX로 삽입된 댓글·목록 행이 observer로 숨겨지는가, 우리 UI 노드(메뉴/토스트)는 스킵되는가.
+- 모바일 목록 닉 폴백: 같은 닉 다중 uid·개명·옛 닉 재사용의 알려진 한계가 문서와 일치하는가.
+- 가져오기: 중복·invalid 혼합 파일, 빈 배열, Chrome 내보내기 파일을 Firefox에서 가져오기(탭 보기 경로).
+- mock/jsdom 결과와 실브라우저 결과를 구분해 기록한다(저장·다중 컨텍스트는 실브라우저가 최종 판정).
 - 베스트댓글에 중복된 차단 유저 댓글도 함께 숨겨지는가.
 
 ## 보고 형식

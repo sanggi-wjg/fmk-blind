@@ -33,7 +33,7 @@ src/content/10-store.js
 
 ```js
 window.FMKBlind = window.FMKBlind || {};
-window.FMKBlind.store = store;   // 아래 6개 메서드를 가진 단일 객체
+window.FMKBlind.store = store;   // 아래 8개 메서드(FROZEN 6 + 가산 2: onChange·importMany)를 가진 단일 객체
 ```
 
 - content/popup 양쪽에서 `FMKBlind.store`로 접근한다.
@@ -41,7 +41,7 @@ window.FMKBlind.store = store;   // 아래 6개 메서드를 가진 단일 객�
 
 ---
 
-## 2. API 시그니처 (6개 FROZEN + 1개 가산 선택)
+## 2. API 시그니처 (6개 FROZEN + 2개 가산 선택: onChange·importMany)
 
 ```js
 /**
