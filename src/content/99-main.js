@@ -12,10 +12,33 @@
     const code = e && e.code;
     if (code === 'CONTEXT_INVALIDATED') return '확장 프로그램이 업데이트되어 저장하지 못했습니다 — 페이지를 새로고침한 뒤 다시 시도하세요';
     if (code === 'QUOTA') return '저장 공간이 가득 차 저장하지 못했습니다 — 팝업에서 목록을 정리해 주세요';
+    if (code === 'SCHEMA_NEWER') return '다른 기기의 더 새 버전이 저장한 목록이라 저장하지 않았습니다 — 확장을 업데이트해 주세요';
     return '저장하지 못했습니다 — 잠시 후 다시 시도하세요';
   }
 
+  // 목록 읽기에 실패하면 그 탭은 차단 없이 남는다. 탭으로 돌아오거나 5초 뒤에 다시 시도한다(최대 3번
+  // — 예: Firefox 시작 직후 storage.sync 일시 오류, 최종 리뷰 #23 M5). 성공하면 그때부터 정상 동작.
+  const MAX_LOAD_RETRIES = 3;
+  let started = false;
+  let retryArmed = false;
+  let loadRetries = 0;
+  function armLoadRetry() {
+    if (retryArmed || loadRetries >= MAX_LOAD_RETRIES) return;
+    retryArmed = true;
+    loadRetries += 1;
+    const retry = () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearTimeout(timer);
+      retryArmed = false;
+      main();
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') retry(); };
+    const timer = setTimeout(retry, 5000);
+    document.addEventListener('visibilitychange', onVisible);
+  }
+
   async function main() {
+    if (started) return;
     const store = NS.store;
 
     // 안전 실패: store 미탑재 시 차단 없이 페이지 정상 노출(에러로 페이지 깨지지 않게).
@@ -27,9 +50,12 @@
     try {
       await store.load(); // 최초 1회. 읽기는 store가 1회 재시도하고, 그래도 실패하면 reject(READ_FAILED 등).
     } catch (e) {
-      console.warn('[FMK-Blind] store.load 실패 — 차단 없이 정상 노출', e);
+      console.warn('[FMK-Blind] store.load 실패 — 차단 없이 정상 노출, 잠시 뒤 다시 시도', e);
+      if (!e || e.code !== 'CONTEXT_INVALIDATED') armLoadRetry();
       return;
     }
+    if (started) return; // 재시도와 겹친 경우
+    started = true;
 
     // 닉네임 → uid 색인(UID 없는 목록 — 모바일 목록·PC 위젯형 목록 — 의 닉네임 폴백용). store.list() 의 저장 닉네임으로 구성하고
     // 차단 목록이 바뀌면(차단/해제/onChange) null 로 무효화 → 다음 조회 때 재구성한다.

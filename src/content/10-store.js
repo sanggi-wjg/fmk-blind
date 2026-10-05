@@ -23,7 +23,7 @@
  *     어떤 키 순서로 저장됐든(Chrome은 키 정렬해서 돌려준다) 바뀌지 않은 청크는 다시 쓰지 않는다.
  *
  * 남은 한계:
- *   - 같은 브라우저 안에선 읽기→쓰기 사이가 수 ms라 사실상 안전하다. 기기 간에는 sync 전파 전에 두 기기가
+ *   - 같은 브라우저 안에선 읽기→쓰기 사이가 수 ms라 사람이 일으키기 어렵다(같은 ms 안의 두 쓰기는 한쪽 유실 가능). 기기 간에는 sync 전파 전에 두 기기가
  *     각각 쓰면 Chrome sync가 키(청크) 단위로 나중 쓰기를 남겨, 겹친 청크의 다른 변경이 사라질 수 있다.
  *   - 이 보호(읽은 뒤 병합)는 0.8.0 이상끼리만 성립한다. 0.7.x가 남은 기기·탭은 예전처럼 덮어쓸 수 있다.
  */
@@ -130,7 +130,7 @@
   }
 
   /** 쓰기 오류 분류. 비재시도: QUOTA·CONTEXT_INVALIDATED. 나머지(레이트리밋 포함)는 재시도 대상. */
-  var OUR_CODES = { QUOTA: 1, CONTEXT_INVALIDATED: 1, WRITE_FAILED: 1, READ_FAILED: 1 };
+  var OUR_CODES = { QUOTA: 1, CONTEXT_INVALIDATED: 1, WRITE_FAILED: 1, READ_FAILED: 1, SCHEMA_NEWER: 1 };
   function classify(e) {
     if (e && typeof e.code === 'string' && OUR_CODES[e.code]) return e.code; // DOMException 숫자 code 등은 무시
     var msg = String((e && e.message) || e);
@@ -206,20 +206,50 @@
   }
 
   /**
-   * 항목 배열을 청크로 나누고 용량을 잰다. 단일 항목이 청크 한도를 넘으면 QUOTA 오류.
+   * 항목 배열을 청크로 나누고 용량을 잰다. 새로 넣는 항목이 청크 한도를 넘으면 QUOTA 오류,
+   * 이미 저장돼 있던 초과 항목은 혼자 청크 하나를 쓰게 둔다(판단은 브라우저).
+   * @param {Array} list  [uid, rec] 배열
+   * @param {function(string): boolean} [isNew]  이번에 새로 넣는 항목인가(기본: 모두 새 항목으로 엄격 검사)
    * @returns {{chunks: Array<Array<[string,{addedAt:number,nick:string}]>>, total: number}}
    */
-  function buildChunks(list) {
+  function buildChunks(list, isNew) {
     // 청크 값 = '[' + 항목들을 ','로 이은 것 + ']' 이므로 항목 크기를 한 번씩만 재서 더한다.
     var chunks = [];
     var cur = [];
     var curLen = 0; // 현재 청크 값의 바이트(키 제외)
     var total = quotaLen('bl_meta', { ver: SCHEMA_VER });
+    // 이미 저장돼 있던 초과 항목은 맨 앞(가장 짧은 키 bl_0…)에 혼자 청크로 둔다. 뒤로 밀려 키가 길어지면
+    // (bl_9 → bl_10) 항목 한도 8192B에 딱 맞던 항목이 1B 넘쳐 모든 쓰기가 막힐 수 있다.
+    var legacyBig = [];
+    var rest = [];
+    for (var p = 0; p < list.length; p++) {
+      var cand = [list[p][0], canonRec(list[p][1])];
+      var big = byteLen('bl_0') + 2 + valueLen(cand) > CHUNK_BUDGET;
+      if (big && isNew && !isNew(cand[0])) legacyBig.push(list[p]); else rest.push(list[p]);
+    }
+    list = legacyBig.concat(rest);
     for (var i = 0; i < list.length; i++) {
       var entry = [list[i][0], canonRec(list[i][1])];
       var len = valueLen(entry);
       if (byteLen('bl_' + chunks.length) + 2 + len > CHUNK_BUDGET) {
-        throw coded('QUOTA', '항목 하나가 저장 한도를 넘습니다(uid=' + entry[0] + ').');
+        // 청크 예산(7168B)을 넘는 항목. 새로 넣는 항목이면 거절하고, 예전 버전이 이미 저장해 둔 항목이면
+        // (브라우저가 받아 준 것이므로) 항목 한도(8192B) 안에서 혼자 청크 하나를 쓰게 둔다 — 그렇지 않으면
+        // 그 항목 하나 때문에 다른 유저의 차단·해제까지 모두 막힌다(최종 리뷰 #23 M1).
+        // 기존 항목은 크기 추정과 무관하게 받아 둔다(추정은 근사치라 브라우저가 받아 준 항목을 거절할 수 있다
+        // — 예: Firefox는 '<'를 이스케이프하지 않음). 실제로 너무 크면 브라우저의 set이 판단한다.
+        var soloKey = 'bl_' + (chunks.length + (cur.length ? 1 : 0));
+        if (isNew ? isNew(entry[0]) : true) {
+          throw coded('QUOTA', '항목 하나가 저장 한도를 넘습니다(uid=' + entry[0] + ').');
+        }
+        if (cur.length) {
+          total += byteLen('bl_' + chunks.length) + curLen;
+          chunks.push(cur);
+          cur = [];
+          curLen = 0;
+        }
+        total += byteLen(soloKey) + 2 + len;
+        chunks.push([entry]);
+        continue;
       }
       var key = 'bl_' + chunks.length;
       if (cur.length > 0 && byteLen(key) + curLen + 1 + len > CHUNK_BUDGET) {
@@ -282,12 +312,18 @@
     var all = await syncGet(null);
     var parsed = parseDisk(all);
     lastRead = parsed.entries; // 쓰기가 실패해도 방금 읽은 디스크 상태는 살린다
+    // 더 새 버전이 다른 형식으로 저장한 데이터면 쓰지 않는다(덮어쓰면 그 데이터가 사라진다 — 최종 리뷰 #23 M4).
+    if (parsed.meta && Number(parsed.meta.ver) > SCHEMA_VER) { // "2" 같은 문자열 버전도 막는다
+      throw coded('SCHEMA_NEWER', '더 새 버전의 확장이 저장한 목록입니다(형식 ' + parsed.meta.ver + ') — 확장을 업데이트해 주세요.');
+    }
     var merged = new Map(parsed.entries);
     ops.forEach(function (o) {
       if (o.op === 'add') merged.set(o.uid, o.rec); else merged.delete(o.uid);
     });
 
-    var built = buildChunks(Array.from(merged.entries()));
+    var newUids = {};
+    ops.forEach(function (o) { if (o.op === 'add') newUids[o.uid] = 1; });
+    var built = buildChunks(Array.from(merged.entries()), function (uid) { return !!newUids[uid]; });
     // 용량 사전 검사는 목록이 커지는 쓰기에만 한다. 추정은 근사치라, 브라우저가 이미 받아 준 목록을
     // 줄이는 쓰기(해제 등)까지 막으면 한도 근처 사용자가 영영 정리할 수 없다 — 최종 판단은 브라우저에 맡긴다.
     var diskTotal = quotaLen('bl_meta', { ver: SCHEMA_VER });
@@ -604,11 +640,13 @@
       // 메모리를 바꾸기 전에 용량부터 확인(부분 가져오기 없음).
       try {
         var current = Array.from(map.entries());
-        checkQuota(buildChunks(current.concat(adds)));
+        var addSet = {};
+        adds.forEach(function (a) { addSet[a[0]] = 1; });
+        checkQuota(buildChunks(current.concat(adds), function (uid) { return !!addSet[uid]; }));
       } catch (e) {
         if (e && e.code === 'QUOTA') {
           try {
-            var used = buildChunks(Array.from(map.entries())).total;
+            var used = buildChunks(Array.from(map.entries()), function () { return false; }).total;
             var per = 0;
             adds.forEach(function (a) { per += valueLen([a[0], canonRec(a[1])]) + 1; });
             per /= adds.length;

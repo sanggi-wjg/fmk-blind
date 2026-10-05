@@ -10,7 +10,7 @@ description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계�
 ## sync 제약 (반드시 준수)
 - 전체 용량 ~100KB(102,400B), **항목당 ~8KB(8,192B)**, 최대 512 항목.
 - 쓰기: 분당 120회, 시간당 1,800회. → block/unblock은 **바로 영속화(awaitable)**하고 바뀐 청크만 기록(수동 차단/해제 빈도에선 한도 무해).
-- 용량은 Chrome 방식으로 잰다: 키 + base::JSONWriter 직렬화의 UTF-8 바이트. `<`·U+2028/9·제어문자는 6바이트, int32 밖 숫자(addedAt)엔 ".0"이 붙는다 → `JSON.stringify` 길이만 보면 과소 추정한다.
+- 용량은 Chrome 방식으로 잰다: 키 + base::JSONWriter 직렬화의 UTF-8 바이트. `JSON.stringify`와 다른 점은 `<`·U+2028/9를 6바이트(`\uXXXX`)로 쓰고 int32 밖 숫자(addedAt)에 ".0"을 붙이는 것뿐이라, 이 둘만 보정한다(제어문자는 `JSON.stringify`도 같은 방식으로 이스케이프).
 - `unlimitedStorage` 권한은 sync에 효과 없음(local 전용).
 
 ## 저장 레이아웃
@@ -63,7 +63,8 @@ const store = {
 - **라이브 동기(C9)**: `onChange`는 `chrome.storage.onChanged`(및 bfcache 복원·탭 복귀) 때 저장소를 다시 읽어 메모리 = disk ⊕ pending으로 재계산하고 키 diff를 통지한다(저장 실패로 되돌린 변경도 통지). 핸들러는 읽기 전용(쓰기 없음), persist와 단일 직렬화 큐로 순차 실행. **최신·권위 계약은 `.claude/workspace/store-api-contract.md`**(이 스킬과 어긋나면 계약이 우선).
 
 ## 에러 핸들링 (2026-10-05 — 실패를 성공으로 보이지 않기)
-- 비재시도: `QUOTA`(용량·항목 수 초과, 쓰기 전 사전 검사), `CONTEXT_INVALIDATED`(확장 업데이트 뒤 남은 content script — `runtime.id` 소실).
+- 비재시도: `QUOTA`(용량·항목 수 초과, 쓰기 전 사전 검사), `CONTEXT_INVALIDATED`(확장 업데이트 뒤 남은 content script — `runtime.id` 소실), `SCHEMA_NEWER`(저장소 형식 버전이 더 높음 — 덮어쓰지 않음).
+- 스키마 버전을 올릴 때(압축 등): 구버전이 새 형식을 덮어쓰지 않도록 0.8.0+는 `bl_meta.ver > SCHEMA_VER`면 쓰기를 거부한다. 0.7.x 이하는 이 가드가 없다.
 - 재시도: 그 밖의 오류(레이트리밋 포함)는 1s·2s·4s 백오프로 최대 3회 → `WRITE_FAILED`.
 - 최종 실패: 변경을 되돌리고(구독자 통지) Promise를 `err.code`와 함께 reject. 무한·백그라운드 재시도 금지. 소비자는 reject 시 실패 안내(content 토스트, 팝업 오류 표시).
 - 읽기 실패: load는 1회 재시도 후 reject(`READ_FAILED`), 쓰기 실행은 쓰지 않고 재시도/실패 처리.

@@ -179,6 +179,7 @@
   function storeErrorMessage(e, what) {
     var code = e && e.code;
     if (code === 'CONTEXT_INVALIDATED') return '확장 프로그램이 업데이트되었습니다 — 팝업을 다시 열어 주세요.';
+    if (code === 'SCHEMA_NEWER') return what + ' 실패 — 다른 기기의 더 새 버전이 저장한 목록입니다. 확장을 업데이트해 주세요.';
     if (code === 'QUOTA') {
       var fit = e && typeof e.fit === 'number' ? ' 지금은 약 ' + e.fit + '명까지 더 저장할 수 있습니다.' : '';
       return what + ' 실패 — 동기화 저장 공간(약 100KB)이 부족합니다.' + fit;
@@ -577,16 +578,24 @@
     if (IS_TAB_VIEW) {
       document.body.classList.add('fmkb-tab-view');
       if (PARAMS.get('action') === 'import') {
-        setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.');
-        if (els.importBtn) els.importBtn.focus();
+        setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.'); // 버튼 포커스는 목록을 읽은 뒤(활성화 후)
       }
     }
 
     // load()는 읽기를 1회 재시도한 뒤에도 실패하면 reject한다(이슈 #14). 빈 목록을 정상인 척
     // 보여 주지 않고 오류 상태로 멈춘다(가져오기·해제 비활성).
+    // 목록을 읽기 전엔 가져오기·내보내기를 막는다(중복 판정이 빈 목록 기준이 되거나 빈 파일을 내보내지 않게
+    // — 최종 리뷰 #23 M6).
+    if (els.importBtn) els.importBtn.disabled = true;
+    if (els.exportBtn) els.exportBtn.disabled = true;
     var loaded = typeof store.load === 'function' ? store.load() : Promise.resolve();
     Promise.resolve(loaded)
       .then(function () {
+        if (els.exportBtn) els.exportBtn.disabled = false;
+        if (els.importBtn) {
+          els.importBtn.disabled = false;
+          if (IS_TAB_VIEW && PARAMS.get('action') === 'import') els.importBtn.focus();
+        }
         refresh();
 
         // 라이브 동기(가산적 7번째 API onChange, 계약 C9): 팝업이 열려 있는 동안 외부
