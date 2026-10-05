@@ -1,5 +1,69 @@
 # 코드 리뷰 보고서 — FMK-Blind
 
+> **후속 반영·재검증 기록(2026-10-05, 커밋 전):** 1차 리뷰 R1~R4·N2~N6과 QA M1(꽉 찬 배치에서 선형 탐색이 마지막 청크로 몰림)·m1~m5 반영 — 새 차단은 '자리가 남은 청크 중 uid 해시'(늘 4곳 이상), 디스크에 없던 빈 칸은 쓰지 않음, 중복 uid는 뒤쪽 유지, 가져오기는 늘 '늘리는 변경', 메모리 전용 모드 유실 수정, 재시도 실패 시 오류 코드 분리, persistRun 예외 가드. **2차 리뷰 OK-TO-COMMIT**(반복 재채움 없음·해시 분포 이상적·용량 v0.8.1과 동일) → M1 손상 중간 청크를 `[]`로 덮기·N1 추가 후보 칸 크기 검사 반영. 측정(최악 조건 모의): 새 차단 동시 약 1/8 유실(v0.8.1 80/80), 해제+차단 8~14/80. QA 모의 54/54·12/12·29/29·16/16·4/4, 호환 82/82(v0.6.1~v0.8.1), 용량 5개 닉 패턴 모두 v0.8.1과 같은 인원, 실 Firefox 156 2/2·16/16·29/30(F7은 옛 배치 가정의 테스트 기대값).
+
+## 2026-10-05 저장 계층 후속 리뷰 — 브랜치 `fix/store-followups`(main 8341647 기준, 미커밋) · 이슈 #25·#26·#27·#28
+
+- 담당: extension-reviewer(직접 모드, 독립 리뷰. 병렬 QA 결과는 근거로 쓰지 않음)
+- 대상: `src/content/10-store.js`(`parseDisk` layout/문자열 청크, `hash32`, `planChunks`, `writeMerged`, `tryWrite`/`grows`/`persistRun` 분할 재시도, `settle`/`rollback`/`addOp`/`pendingResult` 변경별 waiter), `src/content/99-main.js`(await 뒤 `isBlocked` 재확인), 계약 C3·C11, sync-sharded-storage 스킬, 헤더, CLAUDE.md, manifest 0.8.2
+- 검증(모두 `scratchpad/rv-d/`): 모의 chrome.storage(키 정렬 읽기·Chrome 방식 용량·항목/전체/키 수 한도·비동기 onChanged·장애 주입) 위에서 t1(기본·1,500명), t2(기기 간 동시 쓰기 키 단위 LWW 병합), t3/t4(waiter·#27 분할·컨텍스트 무효·메모리 전용·미처리 reject), t5(문자열 청크·예전 초과 항목·bl_600·손상·중복·bl_9→bl_10·무작위 퍼징 300회). `node --check` 2파일·manifest JSON 통과.
+
+> **판정: OK-TO-COMMIT. blocker 0 / major 0 / minor 4 / nit 6.** `planChunks` 인덱스·바이트 계산은 정확했다(퍼징 300회에서 중복·예산 초과·내용 불일치·`lens` 합과 실제 크기 차이 0건, bl_10 추가 시에도 예산 준수·`total` 정확 일치). waiter는 컨텍스트 무효·대체·분할·가져오기 경로 모두 끝까지 settle되고 미처리 reject 0건. 1,500명에서 해제·차단 모두 **청크 1개만** 쓰고 `planChunks` 1.2ms. 아래 minor 중 R1(메모리 전용 회귀)과 R2(빈 청크 선생성)는 한두 줄 수정이라 같은 커밋에 넣기를 권한다.
+
+### [minor] R1 메모리 전용 모드에서 저장 후 차단이 사라짐(회귀)  (차원: 정확성)
+- 위치: `src/content/10-store.js:516`
+- 증거: `if (!hasStorage()) { settle(ops); recompute(false); return; }` — `settle`이 pending을 지우는데 `disk`엔 반영하지 않아 `recompute`가 변경을 지운다. 실측: `await block('5')` resolve 후 `isBlocked('5') === false`. v0.8.1은 pending을 남겨 유지됐다.
+- 영향: 실제 확장(Chrome·Firefox 모두 `storage` 권한)에서는 도달하지 않는다. 저장소 없는 테스트 환경·`load()` 문서의 "빈 목록으로 시작" 동작이 깨진다.
+- 수정안: `ops.forEach(function (o) { if (o.op === 'add') disk.set(o.uid, o.rec); else disk.delete(o.uid); });`를 `settle` 앞에 추가(패치본에서 통과 확인).
+
+### [minor] R2 디스크에 없는 빈 청크까지 `[]`로 만들어 처음 몇 번의 동시 쓰기가 다시 겹침  (차원: 견고성 #26)
+- 위치: `planChunks` `place()` `src/content/10-store.js:352`(해시 위치까지 `[]` 채움) + `writeMerged` `:460-462`
+- 증거: 빈 저장소에서 차단 1명 → `set(bl_0..bl_7, bl_meta)`(빈 청크 7개 생성). 두 기기가 같은 기본 상태를 읽고 각각 새 차단(키 단위 LWW 병합 모의, 80회): **빈 저장소 41/80 유실**, 청크가 이미 있는 목록 10/80(해시 충돌 1/8). v0.8.1은 모든 크기에서 80/80. 한쪽의 `[]`가 다른 쪽이 넣은 청크를 덮는다.
+- 수정안: `writeMerged` 루프에서 `if (!built.chunks[i].length && parsed.chunkIdx.indexOf(i) < 0) continue;` — 디스크에 없는 빈 청크는 만들지 않는다(키 틈은 v0.7.1·v0.8.1·현재 판독기 모두 정규식으로 키를 모으므로 무해, stale 계산도 그대로). 패치본: 빈 저장소 41/80 → 10/80.
+
+### [minor] R3 문서의 "모의 80회 중 유실 0"이 실제 동시성 기준과 다름  (차원: 유지보수성/문서)
+- 위치: `.claude/workspace/store-api-contract.md` C11 ①, `CLAUDE.md` 변경 이력 마지막 행
+- 증거: 두 기기가 **같은 기본 상태를 읽은 뒤** 각각 쓰는 진짜 동시 쓰기로 재면 새 차단+새 차단 ≈ 1/8(10/80), 해제+차단 8~14/80, 빈 저장소 41/80(R2 수정 후 10/80). 0/80이 나오려면 한쪽 읽기가 다른 쪽 쓰기 뒤였어야 한다(확률상 (7/8)^80 ≈ 2e-5).
+- 수정안: "같은 청크에 들어갈 확률 ≈ 1/max(8, 청크 수)로 감소(모의: 옛 배치 80/80 → 10/80)"처럼 확률로 적는다.
+
+### [minor] R4 #27 분할 재시도가 실패하면 늘리는 변경도 그 오류 코드로 거절  (차원: 정확성)
+- 위치: `src/content/10-store.js:526-537`
+- 증거: 한도 근처에서 해제+새 차단 → 1차 QUOTA → 해제만 재시도가 일시 오류 4회 → `res = res2` → `rollback(ops, res2.err)`. 실측 결과: 새 차단이 `WRITE_FAILED`로 거절(실제 원인은 QUOTA). 사용자는 "용량 초과"가 아니라 "다시 시도" 안내를 본다.
+- 수정안: `res2` 실패 시 `rollback(grow, res.err); rollback(shrink, res2.err);`(disk = lastRead 먼저). 둘 다 `recompute(true)`를 부르므로 한 번만 부르도록 정리해도 된다.
+
+### [nit] N1 대체된 호출이 후속 변경의 실패를 받음 — 오해를 부르는 토스트
+- 위치: `addOp` `:593`, `99-main.js:93-107`
+- 증거: 차단 X 쓰는 중에 해제 X → 차단 호출자는 해제 결과를 받는다. 해제가 실패하면 차단은 이미 저장됐는데도 "차단 저장 실패" 토스트가 뜬다(화면은 rollback diff로 맞음). 설계 의도(대체)라 nit. 원하면 99-main catch에서 `store.isBlocked(uid)`가 이미 기대 상태면 토스트를 생략.
+
+### [nit] N2 중복 uid 처리 기준이 `parseDisk`와 `planChunks`에서 반대
+- 위치: `parseDisk:200`(뒤 청크가 이김) vs `planChunks:310`(앞 청크가 이김)
+- 증거: bl_0 `9:first`, bl_2 `9:second` → 쓰기 후 저장소엔 `first`, 메모리(`disk = merged`)엔 `second`(다음 onChanged refresh로 맞춰짐). 동시 쓰기(#26)로 중복이 실제로 생길 수 있다.
+- 수정안: `parseDisk`에서 `if (!entries.has(uid)) entries.set(uid, rec)`로 앞 청크 우선 통일.
+
+### [nit] N3 같은 레코드 재추가·닉 변경이 청크 안 순서를 바꿔 불필요한 재쓰기
+- 위치: `planChunks:366-368` — `removeAt` 뒤 `put`은 청크 끝에 붙인다. 쓰기 성공 후 콜백 오류 → 재시도 같은 경우 내용이 같아도 그 청크를 다시 쓴다. 영향은 청크 1개. 원하면 같은 인덱스에 교체.
+
+### [nit] N4 `importMany` 주석 "함께 성공·실패"가 #27 분할에서 엄밀히는 아님
+- 위치: `:829` — 디스크에 있고 pending `del`이 걸린 uid를 가져오면(같거나 작은 레코드) `grows=false`로 분류돼 나머지가 QUOTA로 거절돼도 그 항목만 저장될 수 있다. 주석을 "대부분 함께"로 고치거나 import 변경은 항상 grow로 취급.
+
+### [nit] N5 `persistRun` 예기치 못한 throw 시 waiter 영구 대기 방어 없음
+- 위치: `:509-538` — 현재 경로에선 throw 지점을 찾지 못했지만 실행 Promise를 아무도 보지 않으므로, throw되면 waiter가 영원히 pending + 미처리 reject. `try { … } catch (e) { rollback(ops, coded('WRITE_FAILED', …, e)); }`로 감싸기 권장.
+
+### [nit] N6 문서 잔재
+- 계약 §5 레이아웃(`store-api-contract.md:239`): 빈 `[]` 청크(작은 목록도 최대 8키), 문자열 청크는 첫 쓰기에서 배열로 다시 씀을 추가.
+- 헤더 `10-store.js:26`: 안정 패킹 문장이 "남은 한계" 아래에 있음 → 위 설계 설명으로 이동.
+
+### 확인 완료(결함 없음)
+- `planChunks`: `fits()` 키 길이 반영(bl_10에서도 예산 준수), `removeAt`/`put`의 쉼표·`[]` 계산 = 실제 `valueLen` 합(퍼징 일치), 범위 밖(`bl_600`) 항목 재배치 + 키 정리, 손상 청크 덮어쓰기, 예전 초과 항목 제자리·작아지는 닉 변경 제자리·커지면 QUOTA, 재채움 조건(1,000명 해제 후 14→5청크)과 진동 없음, 끝쪽 trim과 `stale` 목록 일치(trim된 인덱스 = `n >= built.chunks.length`).
+- 용량 사전 검사는 여전히 커지는 쓰기에만, 계획 레이아웃의 `total`로 계산. `importMany`의 `buildChunks` 기반 사전 추정과 `planChunks` 실제 총량 차이는 청크당 수 바이트(안내 인원 1,364명 그대로 성공).
+- waiter: 컨텍스트 무효 reject+되돌림, 빈 ops, 실행 중 대체(차단→해제→재차단 모두 resolve, 최종 저장소 일치), `importMany` `Promise.all` 형제 reject 처리됨(미처리 0).
+- 호환: v0.7.1·v0.8.1 판독기 모두 정규식으로 `bl_\d+`를 모아 빈 청크·틈 허용. v0.8.1 작성기는 조밀하게 다시 채울 뿐 손실 없음.
+- 성능: 1,500명 `importMany` 19ms, 해제 1회 5ms, `planChunks` 평균 1.2ms.
+- `99-main.js`: await 뒤 `isBlocked` 재확인으로 차단→즉시 해제 순서가 화면에 맞게 반영.
+- 보안·MV3: DOM/권한 변경 없음, manifest 버전만 0.8.2.
+
+---
+
 - 담당: extension-reviewer
 - 갱신: 2026-10-05 **재리뷰(델타)** — PR B(저장 계층 쓰기 안전성 재설계, 이슈 #13·#14·#15) 1차 지적 M1·R2~R7 + QA minor-2 수정분. 브랜치 `fix/store-write-safety`, 미커밋 변경분. 1차 리뷰 본문은 아래 "1차 리뷰 기록"에 그대로 둔다.
 - 대상(델타): `src/content/10-store.js`(`valueLen`·`BARE_BIG_INT_RE`, `buildChunks` O(n), `writeMerged`의 `diskTotal`·커지는 쓰기만 사전 검사·stale 청크 `[]` 비우기·remove best-effort·`lastRead`, `persistOps`/`carryingRun`, `classify` 문자열 코드만 신뢰, `importMany` `err.fit` 평균), `src/popup/popup.js` 주석, 계약 C3·C8·C11, `sync-sharded-storage` 스킬, popup/content/storage-engineer 정의, README.
