@@ -37,7 +37,7 @@
       return hidden;
     },
 
-    // 닉네임 폴백: root(Element 또는 document) 자신·하위의 모바일 목록 행(NS.selectors.NICK_ROW)을
+    // 닉네임 폴백: root(Element 또는 document) 자신·하위의 UID 없는 목록 행(NS.selectors.NICK_ROW)을
     // 닉네임으로 판정해 숨긴다. uidForNick: (정규화 닉) => 차단 uid | null 주입.
     // data-fmkb-uid 에 매칭된 uid 를 남기므로 해제 시 unhideByUid 로 그대로 복구된다. 숨긴 수 반환.
     scanNickRows(root, uidForNick) {
@@ -61,7 +61,7 @@
     },
 
     // 최초 로드 1회 전체 스캔. isBlocked: (uid) => boolean 주입.
-    // uidForNick(선택) 주입 시 UID 없는 모바일 목록 행도 닉네임 폴백으로 숨긴다.
+    // uidForNick(선택) 주입 시 UID 없는 목록 행(모바일 목록·PC 위젯형 목록)도 닉네임 폴백으로 숨긴다.
     // 숨긴 컨테이너 수 반환.
     scan(isBlocked, uidForNick) {
       let hidden = 0;

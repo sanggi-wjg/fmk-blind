@@ -1,6 +1,6 @@
 // FMK-Blind — MutationObserver 증분 처리(최초 스캔 이후 새로 삽입되는 노드 숨김)
 // store 비의존: 차단 여부 판정은 install({ isBlocked, uidForNick }) 로 주입받는다(보통 store 기반).
-// uidForNick(선택)은 UID 없는 모바일 목록 행의 닉네임 폴백 판정(30-hide.scanNickRows)에 쓴다.
+// uidForNick(선택)은 UID 없는 목록 행(모바일 목록·PC 위젯형 목록)의 닉네임 폴백 판정(30-hide.scanNickRows)에 쓴다.
 // 목적: AJAX 댓글 작성/갱신·더보기·무한스크롤·새 댓글 삽입 등으로 최초 로드 1회 스캔(30-hide.scan)
 //       이후 DOM 에 붙는 노드에도 차단(숨김)을 즉시 적용한다. 숨김 실동작은 30-hide 를 재사용한다.
 (function () {
@@ -29,7 +29,7 @@
   // addedNode 1개 처리. Element 노드만 대상(텍스트/코멘트 등 비Element 는 즉시 스킵).
   //  (a) 노드 자신이 작성자 앵커면 그것을 처리(앵커가 통째로 삽입되는 경우)
   //  (b) 하위의 작성자 앵커들을 querySelectorAll 로 순회 처리(컨테이너가 삽입되는 경우)
-  //  (c) UID 없는 모바일 목록 행 — 닉네임 폴백(30-hide.scanNickRows). 행 안쪽 노드가 붙은 경우도
+  //  (c) UID 없는 목록 행 — 닉네임 폴백(30-hide.scanNickRows). 행 안쪽 노드가 붙은 경우도
   //      그 노드가 속한 행을 다시 판정한다(closest).
   function handleAddedNode(node, isBlocked, uidForNick) {
     if (node.nodeType !== Node.ELEMENT_NODE) return; // 비Element 스킵
@@ -45,7 +45,7 @@
         .querySelectorAll(NS.AUTHOR_ANCHOR_SELECTOR)
         .forEach((a) => processAnchor(a, isBlocked));
     }
-    // (c) 모바일 목록 행(무한스크롤/더보기로 붙는 행) — 닉네임 폴백
+    // (c) UID 없는 목록 행(무한스크롤/더보기로 붙는 행) — 닉네임 폴백
     NS.hide.scanNickRows(node.closest(NS.selectors.NICK_ROW) || node, uidForNick);
   }
 

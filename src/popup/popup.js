@@ -104,6 +104,10 @@
   /**
    * text를 parent에 추가하되 q(소문자) 일치 구간을 <mark>로 강조.
    * 닉네임은 외부(fmkorea) 입력이므로 textContent로만 다룬다(XSS 방지).
+   * 소문자 변환으로 길이가 바뀌는 문자(예: 'İ' → 'i̇')가 있으면 소문자 문자열의 인덱스가 원문과
+   * 어긋난다(이슈 #20). 그래서 매칭은 항상 필터와 같은 '전체 문자열 소문자'로 하고(문맥 의존 변환 — 예:
+   * 끝의 Σ→ς — 도 필터와 일치), 길이가 다를 때만 코드포인트별 소문자 길이로 '소문자 위치 → 원문 구간' 표를 만든다.
+   * (코드포인트별 소문자 길이는 문맥과 무관해 그 합이 전체 소문자 길이와 같다. 어긋나면 강조 없이 원문만 표시)
    */
   function appendHighlighted(parent, text, q) {
     text = String(text == null ? '' : text);
@@ -112,6 +116,25 @@
       return;
     }
     var lower = text.toLowerCase();
+    var origStart = null; // origStart[k]/origEnd[k] = lower[k]를 만든 원문 글자의 [시작, 끝) 위치
+    var origEnd = null;
+    if (lower.length !== text.length) {
+      origStart = [];
+      origEnd = [];
+      for (var c = 0; c < text.length; ) {
+        var ch = String.fromCodePoint(text.codePointAt(c));
+        var n = ch.toLowerCase().length;
+        for (var u = 0; u < n; u++) {
+          origStart.push(c);
+          origEnd.push(c + ch.length);
+        }
+        c += ch.length;
+      }
+      if (origStart.length !== lower.length) {
+        parent.appendChild(document.createTextNode(text)); // 위치 표를 믿을 수 없으면 강조 생략
+        return;
+      }
+    }
     var idx = lower.indexOf(q);
     if (idx === -1) {
       parent.appendChild(document.createTextNode(text));
@@ -119,13 +142,17 @@
     }
     var i = 0;
     while (idx !== -1) {
-      if (idx > i) parent.appendChild(document.createTextNode(text.slice(i, idx)));
-      var mark = document.createElement('mark');
-      mark.className = 'fmkb-mark';
-      mark.textContent = text.slice(idx, idx + q.length);
-      parent.appendChild(mark);
-      i = idx + q.length;
-      idx = lower.indexOf(q, i);
+      var start = origStart ? origStart[idx] : idx;
+      var end = origEnd ? origEnd[idx + q.length - 1] : idx + q.length; // 마지막 소문자를 만든 원문 글자까지
+      if (start >= i) {
+        if (start > i) parent.appendChild(document.createTextNode(text.slice(i, start)));
+        var mark = document.createElement('mark');
+        mark.className = 'fmkb-mark';
+        mark.textContent = text.slice(start, end);
+        parent.appendChild(mark);
+        i = end;
+      }
+      idx = lower.indexOf(q, idx + q.length);
     }
     if (i < text.length) parent.appendChild(document.createTextNode(text.slice(i)));
   }
@@ -542,6 +569,7 @@
       document.body.classList.add('fmkb-tab-view');
       if (PARAMS.get('action') === 'import') {
         setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.');
+        if (els.importBtn) els.importBtn.focus();
       }
     }
 

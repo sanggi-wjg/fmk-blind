@@ -23,7 +23,7 @@
       return;
     }
 
-    // 닉네임 → uid 색인(UID 없는 모바일 목록의 닉네임 폴백용). store.list() 의 저장 닉네임으로 구성하고
+    // 닉네임 → uid 색인(UID 없는 목록 — 모바일 목록·PC 위젯형 목록 — 의 닉네임 폴백용). store.list() 의 저장 닉네임으로 구성하고
     // 차단 목록이 바뀌면(차단/해제/onChange) null 로 무효화 → 다음 조회 때 재구성한다.
     // 한계: 차단 후 닉네임을 바꾼 유저는 놓치고, 그 옛 닉네임을 쓰는 다른 유저는 목록에서 숨겨질 수 있다.
     //       외부에서 닉네임만 바뀐 변경(키셋 동일)은 onChange 가 통지하지 않아 새로고침 전까지 옛 색인을 쓴다.
@@ -40,7 +40,7 @@
       return uid && store.isBlocked(uid) ? uid : null;
     }
 
-    // 1) 최초 로드 1회 스캔 — 차단 대상 컨테이너 숨김(+ 모바일 목록 닉네임 폴백).
+    // 1) 최초 로드 1회 스캔 — 차단 대상 컨테이너 숨김(+ UID 없는 목록 닉네임 폴백).
     NS.hide.scan((uid) => store.isBlocked(uid), uidForNick);
 
     // 2) 증분 처리(MutationObserver) — 최초 스캔 이후 AJAX 댓글/더보기/무한스크롤/새 댓글 삽입 등으로
@@ -76,7 +76,7 @@
     // 4) 라이브 동기(C9) — 팝업/다른 탭/다른 기기의 변경을 새로고침 없이 현재 탭에 반영.
     //    store.onChange는 외부 sync 변경 시에만 diff를 통지한다(자기-쓰기 에코는 빈 diff → 미호출).
     //    removed → 복구(닉네임 폴백으로 숨긴 행도 data-fmkb-uid 를 남기므로 unhideByUid 로 함께 복구),
-    //    added → 현재 DOM에서 해당 작성자 컨테이너 숨김, 마지막에 모바일 목록 닉네임 폴백 재스캔. 30-hide 함수 재사용.
+    //    added → 현재 DOM에서 해당 작성자 컨테이너 숨김, 마지막에 UID 없는 목록 닉네임 폴백 재스캔. 30-hide 함수 재사용.
     //    범위: 이미 로드된 DOM을 즉시 반영. 이후 새로 삽입되는 DOM은 (2)의 MutationObserver 가
     //    삽입 시점의 최신 차단 상태로 처리하므로 별도 처리가 필요 없다.
     if (typeof store.onChange === 'function') {
