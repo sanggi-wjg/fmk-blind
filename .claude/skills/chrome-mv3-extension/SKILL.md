@@ -61,7 +61,11 @@ src/
 icons/
 ```
 
+## 팝업 크로스 브라우저 주의 (Firefox)
+- **Firefox 팝업에서 파일 선택 창·컬러 피커 등 네이티브 대화상자를 열면 팝업이 포커스를 잃고 즉시 닫힌다**(Mozilla Bug 1292701). `change` 이벤트 전에 페이지가 사라져 후속 처리(예: 가져오기 저장)가 실행되지 않는다(이슈 #9). Chrome 팝업은 열린 채 유지돼 증상이 없다.
+- 규약: 팝업에서 파일 선택이 필요하면 Firefox(`location.protocol === 'moz-extension:'`)에선 **같은 popup.html을 일반 탭(`?view=tab`)으로 열어** 거기서 처리한다(`chrome.tabs.create` — `tabs` 권한 불필요). 탭에서 파일 창을 자동으로 띄우지 말 것(사용자 클릭 필요) — 안내만 표시.
+
 ## 하지 말 것
-- `host_permissions`, `scripting`, `tabs`, `activeTab` 추가(현 기능에 불필요).
+- `host_permissions`, `scripting`, `tabs`, `activeTab` 추가(현 기능에 불필요). `chrome.tabs.create`는 `tabs` 권한 없이 동작하므로 탭 열기만을 위해 권한을 추가하지 말 것.
 - 백그라운드/서비스워커 추가(불필요한 복잡도).
 - 번들러·프레임워크 도입(무빌드 원칙 위반).
