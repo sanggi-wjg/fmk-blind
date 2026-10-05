@@ -12,7 +12,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 1. 로드 시 전체 스캔(`99-main.js`) — 작성자 앵커 순회 → UID 추출 → 차단 대상 컨테이너에 `.fmkb-hidden` 부여
 2. 컨테이너 판정 규칙 적용(댓글 `li[id^="comment_"]` / 글쓴이 `.rd` / 목록 행 `tr,li`)
 3. **증분 처리** — `35-observer.js`(MutationObserver)로 AJAX 댓글·더보기 등 새로 삽입된 노드에도 같은 판정 재적용
-4. **닉네임 폴백** — UID 없는 모바일 목록 행(`NICK_ROW`)은 저장 닉을 정규화해 대조(`getRowNick`·`scanNickRows`, 99-main의 닉→uid 색인)
+4. **닉네임 폴백** — UID 없는 목록 행(`NICK_ROW` — 모바일 목록·PC 위젯형 목록: 웹진 보기·핫딜·베스트·홈)은 저장 닉을 정규화해 대조(`getRowNick`·`scanNickRows`, 99-main의 닉→uid 색인)
 5. **라이브 반영** — `store.onChange`로 팝업/다른 탭/기기 변경을 현재 DOM에 즉시 숨김/복구
 6. 우클릭 커스텀 컨텍스트 메뉴 — 작성자 앵커 위에서만 표시, 차단/해제 토글
 7. 차단 시 가벼운 토스트, 현재 탭 즉시 숨김 반영
@@ -51,4 +51,4 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 
 ## 재호출 지침 (후속 작업)
 - 이전 `src/content/*`가 있으면 읽고 개선점만 반영
-- 새 화면·셀렉터 추가(예: PC 통합목록 닉 폴백) 시 기존 `scan`/`hideForAnchor`/`scanNickRows` 경로를 재사용하고 observer 판정도 함께 갱신
+- 새 화면·셀렉터 추가(예: 새 목록 형식의 닉 폴백) 시 기존 `scan`/`hideForAnchor`/`scanNickRows` 경로를 재사용하고 observer 판정도 함께 갱신

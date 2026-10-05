@@ -4,7 +4,7 @@
 //   모바일 게시글 작성자 앵커는 PC와 동일 패턴(member_{UID} member_plate)이고 조상 체인에
 //   .rd_hd / .rd 가 그대로 존재함을 실측 확인(2026-07-08, 모바일 UA curl: m_article.html) →
 //   아래 판정 규칙 ②가 모바일에서도 그대로 매치하므로 셀렉터 코드 변경이 필요 없다.
-//   모바일 목록은 숫자 member_ 앵커가 없어(UID 없음) 위 규칙이 매치하지 않는다 →
+//   모바일 목록·PC 위젯형 목록(웹진 보기·핫딜·베스트·홈)은 숫자 member_ 앵커가 없어(UID 없음) 위 규칙이 매치하지 않는다 →
 //   아래 "닉네임 폴백"(NICK_ROW / getRowNick)으로 차단 목록의 저장 닉네임과 대조해 행을 숨긴다.
 (function () {
   'use strict';
@@ -68,21 +68,22 @@
       return anchor.closest('tr, li');
     },
 
-    // ── 닉네임 폴백(UID 없는 모바일 목록) ──
-    // 모바일 목록 행(실측 2026-10-05, 모바일 UA curl — 행에 member_{UID} 앵커 없이 닉네임 텍스트만 있다):
-    //  - 보드 목록(유머 등): `ol.bd_m_lst > li`
-    //  - 베스트(/best)     : `div.fm_best_widget._bd_mobile > ul > li`
-    //  두 클래스(bd_m_lst / _bd_mobile)는 모바일 스킨 전용이라 PC 페이지엔 매치하지 않는다.
-    NICK_ROW: 'ol.bd_m_lst > li, .fm_best_widget._bd_mobile > ul > li',
+    // ── 닉네임 폴백(UID 없는 목록: 모바일 목록·PC 위젯형 목록) ──
+    // UID 없는 목록 행(실측 2026-10-05 — 행에 member_{UID} 앵커 없이 닉네임 텍스트만 있다):
+    //  - 모바일 보드 목록(유머 등)          : `ol.bd_m_lst > li`
+    //  - 위젯형 목록 `div.fm_best_widget > ul > li` — 모바일(`_bd_mobile`) /best,
+    //    PC(`_bd_pc`) 웹진 보기(?listStyle=webzine)·핫딜(/hotdeal)·베스트(/best, /best2)·홈 (이슈 #16)
+    //  PC 표형 목록(tr)은 member_ 앵커가 있어 위 판정 규칙 ③이 처리한다.
+    NICK_ROW: 'ol.bd_m_lst > li, .fm_best_widget > ul > li',
 
     // 닉네임 비교용 정규화: 연속 공백을 하나로, 앞뒤 공백 제거. 저장 닉네임·행 닉네임 양쪽에 적용.
     normalizeNick(s) {
       return String(s || '').replace(/\s+/g, ' ').trim();
     },
 
-    // 모바일 목록 행 → 작성자 닉네임(정규화). 못 찾으면 ''.
-    //  - 보드 목록: `<div class="info"> … <span><i class="fa fa-user"></i> 닉네임</span>`
-    //  - /best   : `<span class="author"> / 닉네임</span>` (앞의 "/" 구분자 제거)
+    // UID 없는 목록 행 → 작성자 닉네임(정규화). 못 찾으면 ''.
+    //  - 모바일 보드 목록: `<div class="info"> … <span><i class="fa fa-user"></i> 닉네임</span>`
+    //  - 위젯형  : `<span class="author"> / 닉네임</span>` (앞의 "/" 구분자 제거)
     getRowNick(row) {
       if (!row) return '';
       const author = row.querySelector('.author');

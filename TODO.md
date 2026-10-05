@@ -5,7 +5,7 @@ v1 범위에서 의도적으로 제외한 개선 항목. 우선순위 순.
 ## 기능 확장
 - [x] **MutationObserver 증분 처리** (Q6) — 2026-07-08 완료. 최초 로드 1회 스캔(30-hide.scan) 이후 AJAX 댓글/더보기/무한스크롤/새 댓글 삽입 등으로 새로 삽입되는 노드에도 차단(숨김)을 즉시 적용(`src/content/35-observer.js`, `document.body` childList/subtree 관찰 → addedNodes 의 작성자 앵커를 30-hide.hideForAnchor 재사용으로 숨김). attributes 미관찰이라 클래스 토글 재귀 없음, 우리 UI 노드(메뉴/토스트) 스킵
 - [x] **`chrome.storage.onChanged` 새로고침 없는 반영** — 2026-06-15 완료. 팝업/다른 탭/다른 기기 변경 시 열린 탭이 즉시 숨김/복구(가산적 7번째 API `onChange` + 불변식 C9). 외부 델타만 reconcile해 로컬 미영속 항목 보존 + 잔여 엣지 I2 닫음. MutationObserver(새 DOM 증분)는 별도 항목으로 2026-07-08 완료(Q6)
-- [x] **모바일 지원** (Q2) — 2026-07-08 완료. `m.fmkorea.com`을 manifest `matches`에 추가(ver 0.6.0). 실측 결과 모바일 **게시글 작성자 앵커가 PC와 동일**(`member_{UID} member_plate`)하고 조상 체인에 `.rd_hd`·`.rd`가 그대로 있어 **별도 셀렉터 세트 불필요** — 기존 판정 규칙 ②가 그대로 매치(20-selectors 무변경, 주석·스킬에 실측 근거 명시). ~~모바일 목록은 UID 없어 범위 밖~~ → 2026-10-05 닉네임 폴백으로 지원(이슈 #8, ver 0.7.0 — 아래 통합목록 폴백 항목 참고). 터치 UX는 `content.css` `@media (pointer: coarse)`로 메뉴·토스트 터치 타깃 확대(40-contextmenu 무변경). **잔여 게이트(실기기/모바일 UA)**: ① 지연 렌더(LazyFilter) 댓글이 `li#comment_{srl}.fdb_itm`로 렌더돼 MutationObserver가 숨기는지, ② Android 롱프레스가 `contextmenu` 발화 + `preventDefault`로 네이티브 메뉴 억제되는지, ③ 롱프레스 직후 스크롤로 메뉴가 즉시 닫히는 경합 유무(있으면 최소 방어 추가 검토), ④ 팝업 동작
+- [x] **모바일 지원** (Q2) — 2026-07-08 완료. `m.fmkorea.com`을 manifest `matches`에 추가(ver 0.6.0). 실측 결과 모바일 **게시글 작성자 앵커가 PC와 동일**(`member_{UID} member_plate`)하고 조상 체인에 `.rd_hd`·`.rd`가 그대로 있어 **별도 셀렉터 세트 불필요** — 기존 판정 규칙 ②가 그대로 매치(20-selectors 무변경, 주석·스킬에 실측 근거 명시). ~~모바일 목록은 UID 없어 범위 밖~~ → 2026-10-05 닉네임 폴백으로 지원(이슈 #8, ver 0.7.0 — 아래 통합목록 폴백 항목 참고). 터치 UX는 `content.css` `@media (pointer: coarse)`로 메뉴·토스트 터치 타깃 확대(40-contextmenu 무변경). **잔여 게이트(실기기/모바일 UA)**: ① ~~지연 렌더(LazyFilter) 댓글이 `li#comment_{srl}.fdb_itm`로 렌더돼 MutationObserver가 숨기는지~~ → 2026-10-05 실측: 모바일 댓글은 정적 HTML에 `li#comment_{srl}.fdb_itm`로 포함돼 판정 규칙 ①이 매치(정적 경로 확인, 실기기 표시만 잔여), ② Android 롱프레스가 `contextmenu` 발화 + `preventDefault`로 네이티브 메뉴 억제되는지, ③ 롱프레스 직후 스크롤로 메뉴가 즉시 닫히는 경합 유무(있으면 최소 방어 추가 검토), ④ 팝업 동작
 - [ ] **저장 압축** (Q5) — LZ-string 등으로 목록 압축 후 샤딩 → sync 수천 명대 확보
 - [x] **내보내기/가져오기** (Q7) — 2026-07-08 완료. 팝업 푸터에 JSON 내보내기/가져오기 버튼(`fmk-blind-blocklist-YYYY-MM-DD.json`). QA 설계 메모대로 대량 import는 가산적 8번째 API `importMany`(계약 C10)로 **메모리 일괄 반영 후 1회 flush(배치 쓰기)** — 레이트리밋 압박 없음. 머지 시맨틱: 새 uid 추가·기존 uid 로컬 유지·비정상 invalid 집계. Chrome↔Firefox 목록 이관 경로(모바일 지원 선행 단계)
 - [ ] **컨텍스트 메뉴 메모** (Q3) — 차단 사유 메모 입력/표시
@@ -14,7 +14,7 @@ v1 범위에서 의도적으로 제외한 개선 항목. 우선순위 순.
 - [ ] **자기 자신 차단 가드** (Q9) — 로그인 사용자 UID 탐지 후 차단 시 경고
 - [ ] **글쓴이 글 직접 진입 시 안내문** (Q4) — 본문이 통째 숨겨져 빈 페이지가 될 때 작은 안내 한 줄
 - [ ] **인용/멘션 처리** (Q8) — 다른 사람이 인용한 차단 유저 텍스트까지 가릴지(오탐 주의)
-- [ ] **홈/베스트 통합목록 폴백** (Q2) — UID 없는 화면에서 마지막 닉네임 텍스트 매칭(오차단 한계 감수). **모바일(`m.`) 보드 목록·`/best`는 2026-10-05 완료**(이슈 #8, `NICK_ROW`/`getRowNick` + 99-main 닉네임 색인). 남은 범위: **PC** 홈/베스트 통합목록(`span.author` 형식 — 같은 `scanNickRows` 경로에 PC 행 셀렉터만 추가하면 됨, PC 실측 필요)
+- [x] **홈/베스트 통합목록 폴백** (Q2) — 2026-10-05 완료. UID 없는 목록 행을 저장 닉네임과 대조해 숨김(오차단 한계 감수): 모바일 보드 목록·`/best`(이슈 #8) + PC 위젯형 목록 웹진 보기·핫딜·베스트·홈(이슈 #16). `NICK_ROW` = `ol.bd_m_lst > li, .fm_best_widget > ul > li`
 
 ## 운영/품질
 - [ ] 셀렉터 회귀 대비 — 에펨 마크업 변경 시 깨지는 지점 모니터링/테스트

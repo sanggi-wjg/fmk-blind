@@ -26,6 +26,7 @@
       row.addEventListener('click', (e) => {
         e.stopPropagation(); // 바깥 click → closeMenu 와 충돌 방지
         closeMenu();
+        closeSitePopupMenu(); // 사이트 회원 메뉴가 비동기로 뒤늦게 다시 뜬 경우까지 닫는다
         item.onClick();
       });
       menu.appendChild(row);
@@ -33,9 +34,17 @@
     return menu;
   }
 
+  // fmkorea(XE) 자체 회원 메뉴. 닉네임 왼쪽 클릭으로 열린 상태에서 우리 메뉴를 열면 겹쳐 남으므로 닫는다
+  // (사이트는 document click 으로 닫는데, 우리 메뉴 항목 클릭은 전파를 막아 닫히지 않았다 — 이슈 #19).
+  function closeSitePopupMenu() {
+    const area = document.getElementById('popup_menu_area');
+    if (area) area.style.display = 'none';
+  }
+
   // position:fixed 기준이므로 clientX/clientY(뷰포트 좌표)를 그대로 사용.
   function openMenuAt(x, y, items) {
     closeMenu();
+    closeSitePopupMenu();
     menuEl = buildMenu(items);
     menuEl.style.left = x + 'px';
     menuEl.style.top = y + 'px';
