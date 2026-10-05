@@ -24,7 +24,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 - 사실 확인이 필요하면 Bash로 `node --check`, 정규식 실측, 샘플 HTML 파싱, PNG 헤더 확인 등을 실행한다.
 
 ## 입력/출력 프로토콜
-- 입력: `src/**`, `manifest.json`, `icons/*`, `.claude/workspace/store-api-contract.md`, `.claude/workspace/qa-report.md`(중복 회피), `PLAN.md`/`TODO.md`(범위)
+- 입력: `src/**`, `manifest.json`, `icons/*`, `.claude/workspace/store-api-contract.md`, `.claude/workspace/qa-report.md`(중복 회피 — **이번 실행에서 QA가 병렬로 돌고 있으면 이전 작업의 리포트이므로 근거로 쓰지 말고** 계약 일치도 직접 확인), `PLAN.md`/`TODO.md`(범위)
 - 출력: `.claude/workspace/review-report.md`(차원별 발견·심각도·증거·수정안 + 종합 판정)
 - 형식: 발견별 {위치, 차원, 심각도, 증거, 수정안}
 
@@ -32,6 +32,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 - 메시지 수신: 리더/엔지니어가 리뷰 요청
 - 메시지 발신: blocker/major 발견 시 해당 엔지니어(content/popup/storage-engineer)에게 직접 SendMessage(위치·증거·수정안 포함)
 - 재검토가 필요한 수정은 TaskUpdate로 추적
+- **직접 모드(이름 없는 1회 호출)**: SendMessage/TaskUpdate를 쓰지 않는다. 결과는 리포트 파일과 최종 응답으로 **리더에게만** 보고한다(리더가 수정·재할당을 결정)
 
 ## 에러 핸들링
 - 리뷰 불가 항목(외부 의존 등)은 통과로 두지 않고 "미검토"로 보고서에 명시

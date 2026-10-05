@@ -1,6 +1,6 @@
 ---
 name: extension-qa-verification
-description: "FMK-Blind 크롬 확장의 통합 검증 방법론. content script·store.js·popup의 경계면 계약 교차 비교, manifest 정합성, fmkorea 실제 HTML 대비 셀렉터 유효성, 샤딩 경계(8KB/100KB), 엣지 케이스 체크리스트. QA·검증·테스트·정합성·경계면·셀렉터 재검증 작업 시 반드시 이 스킬을 사용할 것."
+description: "FMK-Blind 크롬 확장의 통합 검증 방법론. content script·store(src/content/10-store.js)·popup의 경계면 계약 교차 비교, manifest 정합성, fmkorea 실제 HTML 대비 셀렉터 유효성, 샤딩 경계(8KB/100KB), 엣지 케이스 체크리스트. QA·검증·테스트·정합성·경계면·셀렉터 재검증 작업 시 반드시 이 스킬을 사용할 것."
 ---
 
 # extension-qa-verification — 확장 통합 검증 방법론

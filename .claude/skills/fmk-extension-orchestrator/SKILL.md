@@ -16,7 +16,7 @@ Phase 0에서 변경 범위를 보고 둘 중 하나를 고른다.
 | 모드 | 언제 | 구성 |
 |------|------|------|
 | **팀 모드** (지속형 에이전트 협업) | store 계약(`10-store.js` API·불변식)을 바꾸거나, 2개 이상 모듈(store+content/popup)에 걸친 기능 | 이름 있는 `Agent(name:)`를 한 메시지에서 병렬 실행 + `TaskCreate`/`TaskUpdate` 공유 작업 목록 + `SendMessage`. 계약 협상이 핵심이라 대화 맥락 유지가 필요 |
-| **직접 모드** (리더 구현 + 서브에이전트 검증) | 단일 모듈 버그 수정·셀렉터 보정·팝업 국소 수정·문서 | 리더(메인)가 직접 구현 → `extension-qa`·`extension-reviewer`를 서브에이전트로 **한 메시지에서 병렬** 호출(결과만 받으면 됨) |
+| **직접 모드** (리더 구현 + 서브에이전트 검증) | 단일 모듈 버그 수정·셀렉터 보정·팝업 국소 수정·문서 | 리더(메인)가 직접 구현 → 코드 변경이면 `extension-qa`·`extension-reviewer`를 이름 없는 서브에이전트로 **한 메시지에서 병렬** 호출(결과만 받으면 됨). 문서·기계적 변경이면 서브에이전트 없이 Phase 6 인라인 리뷰 |
 
 판단이 애매하면 직접 모드로 시작하고, 구현 중 계약 변경이 필요해지면 팀 모드로 승격한다(storage-engineer를 이름 붙여 실행).
 
@@ -46,7 +46,7 @@ Phase 0에서 변경 범위를 보고 둘 중 하나를 고른다.
 2. 실행 유형 결정:
    - **부분 재실행**: 특정 모듈만 수정(예: "팝업만", "셀렉터 수정") → 직접 모드 또는 해당 에이전트만 실행. 다른 산출물은 보존하고 이전 결과 경로를 프롬프트에 넣어 개선만 반영.
    - **TODO 기능 추가**: 관련 에이전트만 구성하고, 완료 시 `TODO.md`에서 체크.
-   - **대규모 재작성**: 기존 `.claude/workspace/`를 `.claude/workspace_{YYYYMMDD}/`로 옮긴 뒤 Phase 1.
+   - **대규모 재작성**: 기존 `.claude/workspace/`를 `.claude/workspace_{YYYYMMDD}/`로 옮긴 뒤 Phase 1. 단 `store-api-contract.md`는 최신·권위 계약이므로 새 `.claude/workspace/`에 **복사해 유지**한다(QA·리뷰 리포트만 보관 이동).
 3. 위 표로 **팀 모드/직접 모드**를 정한다.
 
 ### Phase 0.5: 브랜치 준비 (기능 단위의 시작)
@@ -58,7 +58,7 @@ Phase 0에서 변경 범위를 보고 둘 중 하나를 고른다.
 
 ### Phase 1: 준비
 1. `PLAN.md`·`TODO.md`·계약을 읽어 범위·결정을 확정.
-2. `.claude/workspace/`가 없으면 생성.
+2. `.claude/workspace/`가 없으면 생성. 이전 작업의 `.claude/workspace/freeze.sha`가 남아 있으면 삭제한다(낡은 해시로 대조하는 오탐 방지).
 3. 작업 목록을 정리(팀 모드면 TaskCreate용).
 
 ### Phase 2: 실행 구성
@@ -73,7 +73,7 @@ Phase 0에서 변경 범위를 보고 둘 중 하나를 고른다.
    Agent(name: "popup-engineer", subagent_type: "popup-engineer", model: "opus", prompt: "...")
    ```
 2. 공유 작업 목록에 의존성과 함께 등록(`TaskCreate`): 계약 확정 → (store 구현 ‖ content 구현 ‖ popup 구현) → QA 검증 → 리뷰.
-3. QA·리뷰는 구현 모듈이 나오는 대로 Phase 3에서 투입한다(처음부터 띄워 대기시키지 않는다).
+3. QA·리뷰는 구현 모듈이 나오는 대로 Phase 3에서 **리더가** 투입한다(처음부터 띄워 대기시키지 않는다). 엔지니어는 QA에 직접 요청하지 않고 리더에게 투입을 요청한다.
 
 **실행 모드: 직접 모드일 때 (리더 구현)**
 1. 리더가 관련 스킬(fmk-dom-selectors·chrome-mv3-extension·sync-sharded-storage)을 로드해 직접 구현한다.
@@ -88,10 +88,11 @@ Phase 0에서 변경 범위를 보고 둘 중 하나를 고른다.
 
 ### Phase 4: 통합·최종 검증
 1. 산출물이 올바른 경로(`manifest.json`, `src/**`)에 있는지 확인.
-2. **QA·리뷰**: 팀 모드면 이미 실행 중인 extension-qa의 `qa-report.md`를 확인하고, 그린이면 extension-reviewer를 실행. 직접 모드면 `extension-qa`와 `extension-reviewer`를 **한 메시지에서 병렬 서브에이전트**로 호출(변경 파일 목록과 이전 리포트 경로를 prompt에 포함).
-3. blocker/major는 해당 엔지니어(직접 모드면 리더)가 수정 → 재검증(최대 2회).
-4. 최종 구조 검증: manifest `js` 목록과 실제 파일 일치, store 계약과 소비자(content·popup) 호출 일치.
-5. **실브라우저 게이트**: 저장 계층·다중 컨텍스트·팝업 생명주기·브라우저별 차이가 걸린 변경은 mock/jsdom PASS로 단정하지 않는다(거짓 PASS 전례). 가능하면 실 Firefox 헤드리스(Selenium, 임시 애드온)나 실 Chrome으로 직접 검증하고, 불가하면 사용자에게 실브라우저 확인 절차를 안내하고 PR 체크리스트에 미결로 남긴다. 모바일 런타임은 사용자 실기기 게이트.
+2. **QA·리뷰**: 팀 모드면 이미 실행 중인 extension-qa의 `qa-report.md`를 확인하고, 그린이면 extension-reviewer를 실행. 직접 모드면 코드 변경일 때만 `extension-qa`와 `extension-reviewer`를 **한 메시지에서 병렬 서브에이전트**로 호출한다. prompt에 변경 파일 목록을 넣고, 리뷰어에게는 "이번 실행의 qa-report는 병렬 생성 중이니 근거로 쓰지 말고 계약 일치도 직접 확인"을 명시한다. 문서·기계적 변경은 서브에이전트를 생략하고 Phase 6 인라인 리뷰로 간다.
+3. blocker/major는 해당 엔지니어(직접 모드면 리더)가 수정 → **QA와 리뷰를 다시 실행**해 재검증(최대 2회). QA 그린 이후 코드가 바뀌면 리뷰 지적 수정이라도 QA 재검증을 거친다(팀 모드는 extension-qa에 `SendMessage`, 직접 모드는 재호출).
+4. **산출물 동결**: 최종 QA·리뷰가 그린이면 검증한 파일의 해시를 기록한다 — `shasum -a 256 manifest.json src/**/*.* src/*.css icons/*.png .claude/workspace/store-api-contract.md > .claude/workspace/freeze.sha`. **Phase 6-2(버전 범프 전)**에 `shasum -a 256 -c .claude/workspace/freeze.sha`로 대조하고, 불일치면 바뀐 파일을 재검증한 뒤 진행한다(완료 보고 뒤 다른 에이전트 요청으로 조용히 수정되는 것 방지). `freeze.sha`는 실행별 임시 산출물이라 커밋하지 않는다(`.gitignore` 등록).
+5. 최종 구조 검증: manifest `js` 목록과 실제 파일 일치, store 계약과 소비자(content·popup) 호출 일치.
+6. **실브라우저 게이트**: 저장 계층·다중 컨텍스트·팝업 생명주기·브라우저별 차이가 걸린 변경은 mock/jsdom PASS로 단정하지 않는다(거짓 PASS 전례). 가능하면 실 Firefox 헤드리스(Selenium, 임시 애드온)나 실 Chrome으로 직접 검증하고, 불가하면 사용자에게 실브라우저 확인 절차를 안내하고 PR 체크리스트에 미결로 남긴다. 모바일 런타임은 사용자 실기기 게이트.
 
 ### Phase 5: 정리
 1. 팀 모드 에이전트는 작업이 끝나면 스스로 종료한다. 남아 있는 백그라운드 작업만 `TaskStop`으로 정리한다.
@@ -106,7 +107,7 @@ Phase 0.5에서 브랜치를 땄다면, **커밋 전에 반드시 리뷰 게이�
    - 판정: **blocker/major가 있으면 커밋하지 않는다** → 수정 후 재리뷰하거나, 사용자에게 보고해 **커밋 여부를 사용자가 결정**하게 한다. minor는 기록 후 진행 가능.
    - **문서 드리프트도 리뷰 대상**: 이번 변경이 스킬·에이전트 정의·계약(`store-api-contract.md`)·`PLAN.md`·`README.md`·`TODO.md` 기술과 어긋나면 같은 PR에서 갱신한다(드리프트 0).
    - 리뷰 verdict(이슈 목록 포함)를 **사용자에게 보고**한 뒤 다음 단계로.
-2. **검증 게이트**: Phase 4의 실브라우저 게이트 결과를 확인한다. 미결이면 PR 본문 체크리스트에 "실브라우저 검증"을 미결로 명시.
+2. **검증 게이트**: 이번 실행이 `freeze.sha`를 만들었다면(Phase 4-4) 버전 범프 **전에** 대조해 통과했는지, Phase 4의 실브라우저 게이트 결과를 확인한다. 미결이면 PR 본문 체크리스트에 "실브라우저 검증"을 미결로 명시.
 3. **버전 범프 정책**: 릴리즈가 필요한 변경이면 `manifest.json`의 `version`을 올린다(semver: 기능=minor, 수정=patch). `release.yml`이 버전 기준으로 릴리즈를 만들므로 **안 올리면 머지해도 릴리즈가 안 생긴다**. 문서/하네스만 바뀌면 생략.
 4. **커밋**: 이번 작업 파일만 스테이징(무관한 미커밋 변경·zip·`settings.local.json` 제외 확인) → 한국어 요약 + 본문(변경·검증 결과). 메시지 끝에는 **세션이 지시하는 attribution(`Co-Authored-By`) 라인을 그대로** 붙인다(모델명 하드코딩 금지 — 모델이 바뀌면 드리프트).
 5. **푸시**: `git push -u origin <branch>`.
@@ -121,9 +122,10 @@ storage-engineer → store-api-contract.md ──SendMessage──> content-engi
  src/content/10-store.js                         src/content/* , src/popup/* , manifest.json
         └──────────── extension-qa: 경계면 교차 비교 ─────────────┘
                                    ↓
-              .claude/workspace/qa-report.md → extension-reviewer → review-report.md
+   팀 모드:  qa-report.md → extension-reviewer → review-report.md
+   직접 모드: extension-qa ‖ extension-reviewer (병렬, 리뷰어는 이번 qa-report 미참조)
                                    ↓
-                         리더 통합 → Phase 6 PR
+                리더 통합 → freeze.sha 기록 → Phase 6 PR
 ```
 
 ## 에러 핸들링

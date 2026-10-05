@@ -48,8 +48,8 @@ description: "FMK-Blind 크롬 확장의 Manifest V3 구조·규약. 무빌드(�
 
 ## content script 로드·공유 규약
 - content script는 격리 월드에서 실행되며, `js` 배열의 **나열 순서대로** 로드된다. 앞 파일이 만든 전역을 뒤 파일이 사용할 수 있다.
-- 전역 네임스페이스는 `window.FMKBlind` 하나로 통일한다(`00-namespace.js`가 생성). 각 파일은 자기 영역을 채운다(예: `FMKBlind.store`, `FMKBlind.selectors`, `FMKBlind.hide`).
-- 진입점은 마지막 `99-main.js`: `await FMKBlind.store.load()` → 전체 스캔(UID + 닉네임 폴백) → MutationObserver 시작 → `store.onChange` 구독 → 우클릭 리스너 등록.
+- 전역 네임스페이스는 `window.FMKBlind` 하나로 통일한다. `00-namespace.js`가 먼저 만들지만, **각 파일도 `window.FMKBlind = window.FMKBlind || {}`로 병합 초기화한 뒤** 자기 영역을 채운다(예: `FMKBlind.store`, `FMKBlind.selectors`, `FMKBlind.hide`). 특히 `10-store.js`는 popup이 `00-namespace.js` 없이 단독 로드하므로 이 병합 초기화가 필수다.
+- 진입점은 마지막 `99-main.js`: `await FMKBlind.store.load()` → 전체 스캔(UID + 닉네임 폴백) → MutationObserver 시작 → 우클릭 리스너 등록 → `store.onChange` 구독.
 - `run_at`은 `document_end`. 이후 지연 렌더·AJAX로 붙는 노드는 `35-observer.js`가 처리한다.
 
 ## popup 구조

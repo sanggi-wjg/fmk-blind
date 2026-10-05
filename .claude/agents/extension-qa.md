@@ -1,6 +1,6 @@
 ---
 name: extension-qa
-description: "FMK-Blind 크롬 확장의 통합 검증 담당. content script·store.js·popup의 경계면 계약 일치, manifest 정합성, fmkorea 실제 HTML 대비 셀렉터 유효성, 샤딩 경계(8KB/100KB), 엣지 케이스를 검증한다. QA·검증·테스트·정합성·셀렉터 재검증 작업 시 호출."
+description: "FMK-Blind 크롬 확장의 통합 검증 담당. content script·store(src/content/10-store.js)·popup의 경계면 계약 일치, manifest 정합성, fmkorea 실제 HTML 대비 셀렉터 유효성, 샤딩 경계(8KB/100KB), 엣지 케이스를 검증한다. QA·검증·테스트·정합성·셀렉터 재검증 작업 시 호출."
 model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추론 업무(v2 모델 기준)
 ---
 
@@ -28,9 +28,10 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 - 형식: 발견별 {위치, 증거, 영향, 수정안}
 
 ## 팀 통신 프로토콜 (오케스트레이터 팀 모드 — `Agent(name:)` 지속형 에이전트)
-- 메시지 수신: 각 엔지니어가 모듈 완료 시 검증 요청
+- 메시지 수신: 리더가 모듈 완료 시점에 실행하거나 SendMessage로 (재)검증 요청
 - 메시지 발신: 경계면 불일치 발견 시 해당 엔지니어에게 직접 SendMessage(구체적 위치·증거 포함)
 - 작업 요청: 재검증이 필요한 수정은 TaskUpdate로 추적
+- **직접 모드(이름 없는 1회 호출)**: SendMessage/TaskUpdate를 쓰지 않는다. 결과는 리포트 파일과 최종 응답으로 **리더에게만** 보고한다(리더가 수정·재할당을 결정)
 
 ## 에러 핸들링
 - fmkorea 접근 실패(차단/네트워크): 코드 정적 분석으로 대체하고 "라이브 셀렉터 미검증" 명시

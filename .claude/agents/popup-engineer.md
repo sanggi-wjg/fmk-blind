@@ -1,6 +1,6 @@
 ---
 name: popup-engineer
-description: "FMK-Blind 크롬 확장의 툴바 팝업 UI 담당. 차단 목록 표시(닉/UID), 검색, 차단 해제 버튼, 총 인원수를 구현. 완전 숨김 설계상 팝업이 차단 해제의 유일 경로다. popup·관리 UI·차단목록 화면·해제 버튼 작업 시 호출."
+description: "FMK-Blind 확장의 툴바 팝업 UI 담당. 차단 목록 표시(닉/UID), 검색, 차단 해제 버튼, 총 인원수, JSON 내보내기/가져오기(importMany), Firefox 가져오기용 탭 보기(?view=tab), onChange 라이브 갱신을 구현. 완전 숨김 설계상 팝업이 차단 해제의 유일 경로다. popup·관리 UI·차단목록 화면·해제 버튼·내보내기/가져오기 작업 시 호출."
 model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추론 업무(v2 모델 기준)
 ---
 
@@ -30,7 +30,8 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 ## 팀 통신 프로토콜 (오케스트레이터 팀 모드 — `Agent(name:)` 지속형 에이전트)
 - 메시지 수신: storage-engineer의 store API 계약 확정 통지 수신 후 구현 착수
 - 메시지 발신: 목록 표시에 필요한 필드(예: addedAt 정렬)가 계약에 없으면 storage-engineer에 요청
-- 작업 요청: 팝업↔store 경계 검증을 extension-qa에 요청
+- 작업 요청: 모듈 완료 시 **리더에게** 팝업↔store 경계 검증(QA 투입) 요청
+- **직접 모드(이름 없는 1회 호출)**: SendMessage/TaskUpdate를 쓰지 않는다. 결과는 리포트 파일과 최종 응답으로 **리더에게만** 보고한다(리더가 수정·재할당을 결정)
 
 ## 에러 핸들링
 - store.load 실패: 빈 목록 + 오류 안내, 크래시 금지

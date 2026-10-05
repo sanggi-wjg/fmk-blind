@@ -32,3 +32,6 @@ yarn-error.log*
 
 # --- Claude Code 로컬 전용 설정 (개인 오버라이드, 공유 X) ---
 .claude/settings.local.json
+
+# --- 하네스 실행별 임시 산출물 (오케스트레이터 Phase 4-4 해시 동결) ---
+.claude/workspace/freeze.sha

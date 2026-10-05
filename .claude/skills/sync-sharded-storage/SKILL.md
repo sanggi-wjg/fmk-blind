@@ -1,6 +1,6 @@
 ---
 name: sync-sharded-storage
-description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계층 설계와 store.js API 계약. 메모리 맵, bl_meta 버전, bl_0..N 청크 분할(8KB/100KB 제약), 즉시 영속화(awaitable; 실패 시 디바운스 재시도), stale 청크 정리, load/block/unblock/isBlocked/list/count + onChange(라이브 동기)·importMany(배치 가져오기) API를 정의. 저장·동기화·샤딩·차단목록 영속화·store API 작업 시 반드시 이 스킬을 사용할 것."
+description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계층 설계와 store(src/content/10-store.js) API 계약. 메모리 맵, bl_meta 버전, bl_0..N 청크 분할(8KB/100KB 제약), 즉시 영속화(awaitable; 실패 시 디바운스 재시도), stale 청크 정리, load/block/unblock/isBlocked/list/count + onChange(라이브 동기)·importMany(배치 가져오기) API를 정의. 저장·동기화·샤딩·차단목록 영속화·store API 작업 시 반드시 이 스킬을 사용할 것."
 ---
 
 # sync-sharded-storage — 차단 목록 sync 샤딩 저장 계층
@@ -19,7 +19,7 @@ description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계�
 
 ## 직렬화·청킹 규칙
 1. 메모리 맵을 항목 배열 `[[uid, {nick, addedAt}], ...]`로 직렬화(JSON).
-2. 항목 단위로 누적하며 청크 1개가 ~7.5KB(안전 마진)를 넘기 직전에 끊어 다음 청크로.
+2. 항목 단위로 누적하며 청크 1개가 `CHUNK_BUDGET`(7,168B = 7KB, 8KB 대비 안전 마진)을 넘기 직전에 끊어 다음 청크로.
 3. 각 청크를 `bl_{i}`에 `JSON.stringify`로 저장.
 4. **stale 청크 정리**: 이전보다 청크 수가 줄면 남는 `bl_{k}`(k ≥ 새 청크 수)를 `chrome.storage.sync.remove`로 삭제(유령 데이터 방지).
 5. 총 용량이 100KB에 임박하면 콘솔 경고(향후 압축 TODO 안내).

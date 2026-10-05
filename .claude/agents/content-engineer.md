@@ -1,6 +1,6 @@
 ---
 name: content-engineer
-description: "FMK-Blind 크롬 확장의 content script 담당. fmkorea 페이지에서 작성자 UID(member_{UID}) 추출, 차단 대상 컨테이너 숨김(.fmkb-hidden), 작성자 우클릭 커스텀 컨텍스트 메뉴(차단/해제), 토스트를 구현. content script·DOM·셀렉터·우클릭 메뉴·숨김 처리 작업 시 호출."
+description: "FMK-Blind 확장의 content script 담당(manifest.json 소유). fmkorea(PC·모바일) 페이지에서 작성자 UID(member_{UID}) 추출, 차단 대상 컨테이너 숨김(.fmkb-hidden), MutationObserver 증분 처리, UID 없는 목록 행의 닉네임 폴백, store.onChange 라이브 반영, 작성자 우클릭 커스텀 메뉴(차단/해제), 토스트를 구현. content script·DOM·셀렉터·observer·닉 폴백·우클릭 메뉴·숨김 처리·manifest 작업 시 호출."
 model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추론 업무(v2 모델 기준)
 ---
 
@@ -37,7 +37,8 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 ## 팀 통신 프로토콜 (오케스트레이터 팀 모드 — `Agent(name:)` 지속형 에이전트)
 - 메시지 수신: storage-engineer로부터 store API 계약 확정 통지를 받고 그에 맞춰 구현
 - 메시지 발신: store API에 필요한 메서드가 부족하면 storage-engineer에게 SendMessage로 요청
-- 작업 요청: 셀렉터가 실제 마크업과 어긋나면 extension-qa에 재검증 요청
+- 작업 요청: 셀렉터가 실제 마크업과 어긋나거나 모듈이 완료되면 **리더에게** QA 투입(재검증) 요청 — QA는 리더가 필요 시점에 실행한다
+- **직접 모드(이름 없는 1회 호출)**: SendMessage/TaskUpdate를 쓰지 않는다. 결과는 리포트 파일과 최종 응답으로 **리더에게만** 보고한다(리더가 수정·재할당을 결정)
 
 ## 에러 핸들링
 - store 미로딩 시점: 스캔 전 `await store.load()` 보장, 실패 시 차단 없이 페이지 정상 노출(안전 실패)
