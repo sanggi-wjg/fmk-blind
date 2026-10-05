@@ -20,6 +20,10 @@
  *   가져오기는 '자기-쓰기'라 onChange 에코가 없으므로(계약 C9) 콜백에 의존하지 않고
  *   명시적으로 refresh()를 호출해 목록·인원수를 갱신한다.
  *
+ * 탭 보기(2026-10-05, 이슈 #9): Firefox 팝업은 파일 선택 창이 열리면 닫혀 버려 가져오기가 저장되지
+ *   않는다. 그래서 Firefox 팝업의 가져오기는 같은 popup.html 을 일반 탭(?view=tab&action=import)으로
+ *   열고, 파일 선택·importMany 는 그 탭에서 한다. Chrome 팝업은 기존대로 파일 입력을 직접 연다.
+ *
  * 영속화 보장(계약 C3, 2026-06-15 갱신): store.unblock/block은 sync 쓰기가 완료된 뒤
  *   resolve한다. 따라서 unblock을 await(또는 .then 체이닝)한 시점엔 이미 sync 영속이 끝나 있어,
  *   해제 직후 팝업이 곧장 닫혀도 유실이 없다. → popup은 unblock 반환 Promise만 기다려
@@ -27,8 +31,8 @@
  *   (구 store 내부 pagehide/visibilitychange 자동 flush(C8)는 stale 탭이 옛 목록을 되쓰는
  *    resurrection 원인이라 2026-06-15 제거됨 — 즉시 영속화라 안전망 불필요. 계약 §3 C8 참고.)
  *
- * v1 제약: 팝업 해제는 이미 열린 fmkorea 탭은 새로고침 후 반영(onChanged는 TODO).
- *          팝업 화면 자체는 즉시 갱신한다.
+ * 라이브 반영: 팝업 해제는 store.onChange(C9)로 이미 열린 fmkorea 탭에도 새로고침 없이 반영된다.
+ *          팝업 화면 자체도 즉시 갱신한다.
  */
 (function () {
   'use strict';
@@ -41,6 +45,15 @@
   // 내보내기 파일 포맷(팀 합의). 가져오기는 이 포맷의 entries 배열과 bare 배열을 관용 수용한다.
   var EXPORT_SCHEMA = 'fmk-blind/blocklist';
   var EXPORT_VER = 1;
+
+  // 탭 보기: 같은 popup.html 을 일반 탭으로 연 경우(?view=tab). 아래 Firefox 가져오기 우회용.
+  var PARAMS = new URLSearchParams(location.search);
+  var IS_TAB_VIEW = PARAMS.get('view') === 'tab';
+  // Firefox(데스크톱·Android)는 팝업에서 파일 선택 창이 열리면 팝업이 포커스를 잃고 즉시 닫힌다
+  // (Mozilla Bug 1292701) → change 이벤트가 오기 전에 페이지가 사라져 가져오기가 저장되지 않는다(이슈 #9).
+  // 그래서 Firefox 팝업에선 파일 선택을 탭 보기에서 하도록 넘긴다. 판별은 확장 URL 스킴(moz-extension:)으로.
+  var NEEDS_TAB_FOR_FILE_PICKER =
+    !IS_TAB_VIEW && location.protocol === 'moz-extension:';
 
   var store = window.FMKBlind && window.FMKBlind.store;
 
@@ -450,6 +463,29 @@
       });
   }
 
+  /**
+   * Firefox 팝업 전용: 가져오기 화면을 일반 탭(popup.html?view=tab&action=import)으로 열고 팝업을 닫는다.
+   * 탭은 파일 선택 창이 떠도 닫히지 않으므로 거기서 가져오기 버튼을 다시 누르면 정상 동작한다.
+   * tabs.create 는 tabs 권한 없이 쓸 수 있다(권한 추가 없음). 파일 선택은 사용자 클릭이 필요해
+   * 탭에서 자동으로 띄우지 않고 안내만 표시한다.
+   */
+  function openImportTab() {
+    setIoBusy(true); // 연타 시 탭이 여러 개 열리는 것 방지
+    // new Promise 로 감싸 tabs API 부재 등 동기 throw 도 아래 catch 로 모은다.
+    new Promise(function (resolve) {
+      var url = chrome.runtime.getURL('src/popup/popup.html?view=tab&action=import');
+      resolve(chrome.tabs.create({ url: url }));
+    })
+      .then(function () {
+        window.close();
+      })
+      .catch(function (e) {
+        console.error('[FMK-Blind popup] 가져오기 탭 열기 실패', e);
+        setIoStatus('error', '가져오기 화면을 열지 못했습니다.');
+        setIoBusy(false);
+      });
+  }
+
   // ── 데이터 새로고침(store → 캐시 → 렌더) ───────────────
 
   function refresh() {
@@ -492,9 +528,21 @@
     if (els.exportBtn) els.exportBtn.addEventListener('click', onExport);
     if (els.importBtn && els.importFile) {
       els.importBtn.addEventListener('click', function () {
+        if (NEEDS_TAB_FOR_FILE_PICKER) {
+          openImportTab();
+          return;
+        }
         els.importFile.click();
       });
       els.importFile.addEventListener('change', onImportFileChosen);
+    }
+
+    // 탭 보기(Firefox 가져오기 우회로 열린 경우): 탭 폭에 맞춘 레이아웃 + 다음 동작 안내.
+    if (IS_TAB_VIEW) {
+      document.body.classList.add('fmkb-tab-view');
+      if (PARAMS.get('action') === 'import') {
+        setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.');
+      }
     }
 
     // load()는 계약상 실패해도 throw 안 함(C7) — 방어적으로 catch 후 빈/부분 목록 진행.
