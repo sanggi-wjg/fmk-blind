@@ -18,6 +18,7 @@
 1. `about:debugging#/runtime/this-firefox` 접속
 2. **임시 부가 기능 로드** → 이 저장소의 `manifest.json` 선택
 
+> **Firefox 140 이상**(Android는 142 이상)이 필요하다. 그보다 낮은 버전은 설치가 거부된다(이슈 #21 — 127 미만은 사이트 접근 권한이 자동 부여되지 않아 설치해도 차단이 동작하지 않았음).
 > 임시 로드는 **Firefox를 재시작하면 사라진다**(테스트용). 영구 설치는 Mozilla 서명이 필요하다 → [`DEPLOY.md`](DEPLOY.md).
 
 ## 사용법
