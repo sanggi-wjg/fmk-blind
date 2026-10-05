@@ -31,11 +31,48 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  outline: none; /* 키보드 포커스는 아래 배경 강조로 표시 */
 }
 
-#fmkb-context-menu .fmkb-menu-item:hover {
-  background: #f0524d;
+/* 마우스 hover·키보드 포커스 강조. 흰 글자 대비 4.83:1(#dc2626). */
+#fmkb-context-menu .fmkb-menu-item:hover,
+#fmkb-context-menu .fmkb-menu-item:focus-visible {
+  background: #dc2626;
   color: #ffffff;
+}
+
+/* 투명 외곽선은 고대비(forced-colors) 모드에서만 보인다 — 배경 강조가 강제 색으로 지워져도 포커스 위치를 알린다. */
+#fmkb-context-menu .fmkb-menu-item:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+/* 다크 모드 — 브라우저 기본 우클릭 메뉴처럼 시스템 테마(prefers-color-scheme)를 따르고, fmkorea 자체
+   다크 모드(쿠키 기반, 서버가 body.night_mode 를 붙임)에서도 같은 색을 쓴다. 두 규칙 묶음은 내용이 같다.
+   메뉴 배경 #232327: 글자 대비 13:1, 빨간 강조(#dc2626)와의 경계 대비 3.2:1.
+   토스트: 어두운 페이지에 묻히지 않게 한 단계 밝은 회색(페이지 위 합성 기준 흰 글자 약 10:1, 실행 취소 5.3:1 이상). 오류 토스트는 빨강 유지. */
+@media (prefers-color-scheme: dark) {
+  #fmkb-context-menu {
+    background: #232327;
+    border-color: #45454d;
+    color: #ececf1;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+
+  #fmkb-toast:not(.fmkb-toast-error) {
+    background: rgba(63, 63, 70, 0.97);
+  }
+}
+
+body.night_mode #fmkb-context-menu {
+  background: #232327;
+  border-color: #45454d;
+  color: #ececf1;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+body.night_mode #fmkb-toast:not(.fmkb-toast-error) {
+  background: rgba(63, 63, 70, 0.97);
 }
 
 /* ── 토스트 ── */

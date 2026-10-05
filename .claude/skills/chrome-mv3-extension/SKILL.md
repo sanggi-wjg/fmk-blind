@@ -64,7 +64,7 @@ description: "FMK-Blind 크롬 확장의 Manifest V3 구조·규약. 무빌드(�
 ```
 manifest.json
 src/
-  content.css           # .fmkb-hidden, 메뉴/토스트 스타일, @media (pointer: coarse) 터치 타깃
+  content.css           # .fmkb-hidden, 메뉴/토스트 스타일, @media (pointer: coarse) 터치 타깃, 다크 모드(prefers-color-scheme + fmkorea body.night_mode)
   content/
     00-namespace.js     # window.FMKBlind 생성
     10-store.js         # 공유 저장 계층(content+popup) — storage-engineer 소유

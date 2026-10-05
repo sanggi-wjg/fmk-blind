@@ -14,7 +14,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 3. **증분 처리** — `35-observer.js`(MutationObserver)로 AJAX 댓글·더보기 등 새로 삽입된 노드에도 같은 판정 재적용
 4. **닉네임 폴백** — UID 없는 목록 행(`NICK_ROW` — 모바일 목록·PC 위젯형 목록: 웹진 보기·핫딜·베스트·홈)은 저장 닉을 정규화해 대조(`getRowNick`·`scanNickRows`, 99-main의 닉→uid 색인)
 5. **라이브 반영** — `store.onChange`로 팝업/다른 탭/기기 변경을 현재 DOM에 즉시 숨김/복구
-6. 우클릭 커스텀 컨텍스트 메뉴 — 작성자 앵커 위에서만 표시, 차단/해제 토글
+6. 우클릭 커스텀 컨텍스트 메뉴 — 작성자 앵커 위에서만 표시, 차단/해제 토글. 키보드 접근성(`role=menu`/`menuitem`, 열면 첫 항목 포커스, ↑↓·Home·End·Enter·Space·Esc·Tab, 포커스가 메뉴 안에 있던 채 닫히면 원래 자리로·키보드 선택 뒤 0.5초 Enter/Space 가드, 키보드로 열어 좌표가 앵커 밖이면 앵커 아래에 배치)·다크 모드(시스템 `prefers-color-scheme` + fmkorea `body.night_mode`)
 7. 차단 시 가벼운 토스트, 현재 탭 즉시 숨김 반영. 차단·해제 토스트엔 **실행 취소**(차단 취소=`unblock`, 해제 취소=해제 전 항목을 `importMany([항목])`로 — 날짜 유지), 저장 실패는 `toast.show(msg, {kind:'error'})`(빨간 토스트·긴 표시)
 
 ## 작업 원칙
