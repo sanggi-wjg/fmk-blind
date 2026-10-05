@@ -14,37 +14,46 @@ description: "FMK-Blind 크롬 확장의 Manifest V3 구조·규약. 무빌드(�
 - **최소 권한** — `permissions: ["storage"]`만. `content_scripts.matches`가 주입 권한을 부여하므로 **`host_permissions` 불필요**(외부 fetch·동적 주입을 하지 않음).
 
 ## manifest.json 골격
+실제 `manifest.json`이 단일 출처다. 아래는 구조 요약(아이콘·`key` 값 생략).
 ```json
 {
   "manifest_version": 3,
   "name": "FMK-Blind",
-  "version": "0.1.0",
+  "version": "x.y.z",
+  "key": "…",                       // Chrome 확장 ID 고정(기기 간 sync 공유). Firefox는 무시
   "permissions": ["storage"],
-  "action": { "default_popup": "src/popup/popup.html" },
+  "browser_specific_settings": { "gecko": { "id": "…", "strict_min_version": "115.0",
+    "data_collection_permissions": { "required": ["none"] } } },   // Firefox 전용. Chrome은 무시
+  "action": { "default_popup": "src/popup/popup.html", "default_icon": { "16": "…", "32": "…", "48": "…", "128": "…" } },
+  "icons": { "16": "…", "32": "…", "48": "…", "128": "…" },
   "content_scripts": [{
-    "matches": ["https://www.fmkorea.com/*"],
+    "matches": ["https://www.fmkorea.com/*", "https://m.fmkorea.com/*"],
     "js": [
-      "src/store.js",
-      "src/content/selectors.js",
-      "src/content/hide.js",
-      "src/content/contextmenu.js",
-      "src/content/toast.js",
-      "src/content/main.js"
+      "src/content/00-namespace.js",
+      "src/content/10-store.js",
+      "src/content/20-selectors.js",
+      "src/content/30-hide.js",
+      "src/content/35-observer.js",
+      "src/content/40-contextmenu.js",
+      "src/content/50-toast.js",
+      "src/content/99-main.js"
     ],
     "css": ["src/content.css"],
     "run_at": "document_end"
   }]
 }
 ```
+- 파일명 숫자 접두사 = 로드 순서. 새 모듈은 의존 관계에 맞는 번호로 끼워 넣고 `js` 배열에도 같은 순서로 추가한다.
+- 한 manifest를 Chrome·Firefox가 함께 읽는다 — 각 브라우저는 상대 전용 키(`key` / `browser_specific_settings`)를 무시한다(배포 절차는 `DEPLOY.md`).
 
 ## content script 로드·공유 규약
 - content script는 격리 월드에서 실행되며, `js` 배열의 **나열 순서대로** 로드된다. 앞 파일이 만든 전역을 뒤 파일이 사용할 수 있다.
-- 전역 네임스페이스는 `window.FMKBlind` 하나로 통일한다. 각 파일은 `window.FMKBlind = window.FMKBlind || {}` 후 자기 영역을 채운다(예: `FMKBlind.store`, `FMKBlind.selectors`, `FMKBlind.hide`).
-- 진입점은 마지막 `main.js`: `await FMKBlind.store.load()` → 1회 스캔 → 우클릭 리스너 등록.
-- `run_at`은 댓글이 초기 HTML에 포함되므로 `document_end`(또는 DOMContentLoaded 시점)면 충분.
+- 전역 네임스페이스는 `window.FMKBlind` 하나로 통일한다(`00-namespace.js`가 생성). 각 파일은 자기 영역을 채운다(예: `FMKBlind.store`, `FMKBlind.selectors`, `FMKBlind.hide`).
+- 진입점은 마지막 `99-main.js`: `await FMKBlind.store.load()` → 전체 스캔(UID + 닉네임 폴백) → MutationObserver 시작 → `store.onChange` 구독 → 우클릭 리스너 등록.
+- `run_at`은 `document_end`. 이후 지연 렌더·AJAX로 붙는 노드는 `35-observer.js`가 처리한다.
 
 ## popup 구조
-- `popup.html`에서 공유 라이브러리를 재사용: `<script src="../store.js"></script>` 후 `<script src="popup.js"></script>`.
+- `popup.html`에서 공유 라이브러리를 재사용: `<script src="../content/10-store.js"></script>` 후 `<script src="popup.js"></script>`(사본 금지 — 단일 출처).
 - 팝업도 `chrome.storage.sync`에 직접 접근 가능(별도 권한 불필요).
 - 프레임워크 없이 바닐라 HTML/CSS/JS.
 
@@ -52,13 +61,14 @@ description: "FMK-Blind 크롬 확장의 Manifest V3 구조·규약. 무빌드(�
 ```
 manifest.json
 src/
-  store.js              # 공유 저장 계층(content+popup)
-  content.css           # .fmkb-hidden, 메뉴/토스트 스타일
+  content.css           # .fmkb-hidden, 메뉴/토스트 스타일, @media (pointer: coarse) 터치 타깃
   content/
-    selectors.js  hide.js  contextmenu.js  toast.js  main.js
+    00-namespace.js     # window.FMKBlind 생성
+    10-store.js         # 공유 저장 계층(content+popup) — storage-engineer 소유
+    20-selectors.js  30-hide.js  35-observer.js  40-contextmenu.js  50-toast.js  99-main.js
   popup/
     popup.html  popup.js  popup.css
-icons/
+icons/                  # icon16/32/48/128.png
 ```
 
 ## 팝업 크로스 브라우저 주의 (Firefox)
