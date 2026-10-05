@@ -22,8 +22,10 @@
  *   - 청크 비교는 디스크와 새 청크를 똑같이 정규화한 레코드({addedAt, nick}) 문자열로 한다. 디스크에
  *     어떤 키 순서로 저장됐든(Chrome은 키 정렬해서 돌려준다) 바뀌지 않은 청크는 다시 쓰지 않는다.
  *
+ *   - 청크 배치는 안정적으로 유지한다(해제는 그 청크만, 새 차단은 자리가 남은 청크 중 uid 해시로 — #25·#26 완화).
+ *
  * 남은 한계:
- *   - 같은 브라우저 안에선 읽기→쓰기 사이가 수 ms라 사람이 일으키기 어렵다(같은 ms 안의 두 쓰기는 한쪽 유실 가능). 기기 간에는 sync 전파 전에 두 기기가
+ *   - 같은 브라우저 안에선 읽기→쓰기 사이가 수 ms라 사람이 일으키기 어렵다. 기기 간에는 sync 전파 전에 두 기기가
  *     각각 쓰면 Chrome sync가 키(청크) 단위로 나중 쓰기를 남겨, 겹친 청크의 다른 변경이 사라질 수 있다.
  *   - 이 보호(읽은 뒤 병합)는 0.8.0 이상끼리만 성립한다. 0.7.x가 남은 기기·탭은 예전처럼 덮어쓸 수 있다.
  */
@@ -45,6 +47,9 @@
   var NICK_MAX = 64;                // 가져오기 닉네임 길이 상한(비정상 파일 방어)
   var RETRY_DELAYS_MS = [1000, 2000, 4000]; // 일시 오류 재시도 간격
   var LOAD_RETRY_MS = 300;          // load 읽기 1회 재시도 간격
+  var SPREAD_MIN = 8;               // 목록이 작을 때 새 차단을 흩어 둘 청크 칸 수(#26 완화)
+  var MIN_OPEN = 4;                 // 자리가 남은 청크를 최소 이만큼 유지해 새 차단을 흩어 둔다(#26 완화)
+  var REPACK_FILL = 0.5;            // 평균 채움률이 이보다 낮아지면 한 번 다시 채운다(#25)
 
   // ---- 내부 상태 --------------------------------------------------
   /** @type {Map<string, {nick: string, addedAt: number}>} 마지막으로 읽은 저장소 상태(저장 순서 유지) */
@@ -169,12 +174,13 @@
 
   /**
    * get(null) 결과에서 차단 목록을 읽는다(순수 함수).
-   * @returns {{entries: Map<string,{nick:string,addedAt:number}>, chunkStr: Object<number,string>, chunkIdx: number[], metaOk: boolean, meta: any, otherBytes: number}}
+   * @returns {{entries: Map<string,{nick:string,addedAt:number}>, chunkStr: Object<number,string>, layout: Object<number,Array>, chunkIdx: number[], metaOk: boolean, meta: any, otherBytes: number}}
    *   chunkStr[i] = 디스크 청크 i의 정규 문자열(손상 청크는 없음 → 다음 쓰기에서 덮어씀)
    */
   function parseDisk(all) {
     var entries = new Map();
     var chunkStr = {};
+    var layout = {}; // 청크 번호 → [[uid, rec], ...] (손상 청크는 없음)
     var otherBytes = 0;
     var idx = [];
     Object.keys(all).forEach(function (k) {
@@ -196,13 +202,15 @@
           entries.set(uid, rec);
           canon.push([uid, rec]);
         }
-        chunkStr[idx[j]] = JSON.stringify(canon);
+        // 문자열로 저장된 옛 청크는 '바뀐 것'으로 둬서 다음 쓰기에서 네이티브 배열로 다시 쓰게 한다.
+        if (Array.isArray(val)) chunkStr[idx[j]] = JSON.stringify(canon);
+        layout[idx[j]] = canon;
       } catch (e) {
         console.warn('[FMKBlind.store] 손상 청크 건너뜀: bl_' + idx[j], e);
       }
     }
     var meta = all.bl_meta;
-    return { entries: entries, chunkStr: chunkStr, chunkIdx: idx, metaOk: !!(meta && meta.ver === SCHEMA_VER), meta: meta, otherBytes: otherBytes };
+    return { entries: entries, chunkStr: chunkStr, layout: layout, chunkIdx: idx, metaOk: !!(meta && meta.ver === SCHEMA_VER), meta: meta, otherBytes: otherBytes };
   }
 
   /**
@@ -268,6 +276,128 @@
     return { chunks: chunks, total: total };
   }
 
+  /** uid → 32비트 해시(FNV-1a). 새 차단을 놓을 청크를 고르는 데만 쓴다. */
+  function hash32(str) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h >>> 0;
+  }
+
+  /**
+   * 안정 패킹(#25): 디스크의 청크 배치를 그대로 두고 바뀐 곳만 고친다.
+   *  - 해제: 그 유저가 든 청크에서만 뺀다(뒤 청크를 다시 쓰지 않는다).
+   *  - 닉 변경: 제자리에서 바꾸고, 청크가 넘치면 그 항목만 다른 청크로 옮긴다.
+   *  - 새 차단: "자리가 남은 청크" 중 uid 해시로 하나를 고른다. 자리가 남은 청크가 MIN_OPEN개보다 적으면
+   *    빈 칸(새 청크 번호)을 후보에 더해 늘 여러 곳에 흩어 둔다 — 두 기기가 동시에 서로 다른 유저를 차단해도
+   *    같은 청크를 쓸 확률이 대략 1/후보 수로 줄어든다(#26 완화, 완전한 해소는 아님).
+   *  - 평균 채움률이 REPACK_FILL 아래로 떨어지면 그때만 전체를 다시 채운다(드묾).
+   * 예전 버전이 저장한 청크 예산 초과 항목은 제자리에 둔다(키가 바뀌지 않아 항목 한도도 그대로).
+   * 같은 uid가 여러 청크에 있으면(경쟁의 흔적) parseDisk와 같이 **뒤쪽 것**을 남긴다.
+   * @returns {{chunks: Array<Array>, total: number}}  chunks[i] = 청크 i의 항목 배열(빈 배열 가능 — 디스크에
+   *   없던 빈 청크는 writeMerged가 쓰지 않는다)
+   */
+  function planChunks(parsed, ops, isNew) {
+    var chunks = [];
+    var lens = [];   // 청크별 값 바이트(키 제외, '[]' 포함)
+    var where = new Map();
+    var moved = [];  // 범위 밖 청크의 항목(다시 놓아야 함)
+    var i;
+
+    function ensure(n) { while (chunks.length <= n) { chunks.push([]); lens.push(2); } }
+    function removeAt(uid) {
+      var n = where.get(uid);
+      var arr = chunks[n];
+      for (var k = 0; k < arr.length; k++) {
+        if (arr[k][0] === uid) {
+          var old = valueLen(arr[k]);
+          lens[n] -= old + (arr.length > 1 ? 1 : 0);
+          arr.splice(k, 1);
+          where.delete(uid);
+          return { n: n, k: k, len: old };
+        }
+      }
+      where.delete(uid);
+      return { n: n, k: -1, len: 0 };
+    }
+    function fits(n, len) {
+      if (n >= MAX_ITEMS - 1) return false;
+      var cur = n < chunks.length ? chunks[n] : null;
+      var curLen = cur ? lens[n] : 2;
+      return byteLen('bl_' + n) + curLen + (cur && cur.length ? 1 : 0) + len <= CHUNK_BUDGET;
+    }
+    function put(n, e, len, at) {
+      ensure(n);
+      lens[n] += (chunks[n].length ? 1 : 0) + len;
+      if (at >= 0 && at <= chunks[n].length) chunks[n].splice(at, 0, e); else chunks[n].push(e);
+      where.set(e[0], n);
+    }
+    function place(e, strict) {
+      var len = valueLen(e);
+      if (byteLen('bl_0') + 2 + len > CHUNK_BUDGET) {
+        if (strict) throw coded('QUOTA', '항목 하나가 저장 한도를 넘습니다(uid=' + e[0] + ').');
+        put(chunks.length, e, len, -1); // 예전 초과 항목: 혼자 새 청크
+        return;
+      }
+      var cand = [];
+      var span = Math.max(chunks.length, SPREAD_MIN);
+      for (var n = 0; n < span; n++) if (fits(n, len)) cand.push(n);
+      for (var m = span; cand.length < MIN_OPEN && m < MAX_ITEMS - 1; m++) if (fits(m, len)) cand.push(m);
+      if (!cand.length) throw coded('QUOTA', '저장 키 개수 한도에 도달했습니다.');
+      put(cand[hash32(e[0]) % cand.length], e, len, -1);
+    }
+
+    // 디스크 배치 복원. 키 개수 한도 밖의 번호(손상 등)는 비우고 그 안의 항목은 다시 놓는다.
+    parsed.chunkIdx.forEach(function (n) {
+      var arr = parsed.layout[n] || [];
+      if (n >= MAX_ITEMS - 1) { arr.forEach(function (e) { moved.push(e); }); return; }
+      ensure(n);
+      arr.forEach(function (e) {
+        if (where.has(e[0])) removeAt(e[0]); // 중복이면 뒤쪽 것을 남긴다(parseDisk와 같은 규칙)
+        put(n, e, valueLen(e), -1);
+      });
+    });
+
+    moved.forEach(function (e) { if (where.has(e[0])) removeAt(e[0]); place(e, false); });
+    ops.forEach(function (o) {
+      var e = o.op === 'add' ? [o.uid, canonRec(o.rec)] : null;
+      if (where.has(o.uid)) {
+        var at = removeAt(o.uid);
+        if (!e) return;
+        // 제자리 갱신(같은 위치 유지). 넘치면 그 항목만 옮긴다. 혼자 쓰던 청크(예전 초과 항목)는 커지지 않을 때만 제자리.
+        var len = valueLen(e);
+        if (fits(at.n, len) || (chunks[at.n].length === 0 && len <= at.len)) { put(at.n, e, len, at.k); return; }
+        place(e, isNew(o.uid));
+        return;
+      }
+      if (e) place(e, isNew(o.uid));
+    });
+
+    // 채움률이 너무 낮으면 한 번 다시 채운다(기존 항목 순서 유지, 예전 초과 항목은 앞쪽).
+    var live = 0;
+    var used = 0;
+    for (i = 0; i < chunks.length; i++) {
+      if (chunks[i].length) { used++; live += lens[i] - 2; }
+    }
+    if (used > Math.max(SPREAD_MIN, Math.ceil(live / (CHUNK_BUDGET * REPACK_FILL)) + MIN_OPEN)) {
+      var all = [];
+      chunks.forEach(function (arr) { arr.forEach(function (e) { all.push(e); }); });
+      return buildChunks(all, function () { return false; });
+    }
+
+    // 끝쪽 빈 청크는 정리한다(디스크에 있던 것은 writeMerged가 비우고 지운다).
+    while (chunks.length && chunks[chunks.length - 1].length === 0) { chunks.pop(); lens.pop(); }
+    var onDisk = {};
+    parsed.chunkIdx.forEach(function (n) { onDisk[n] = 1; });
+    var total = quotaLen('bl_meta', { ver: SCHEMA_VER });
+    for (i = 0; i < chunks.length; i++) {
+      if (chunks[i].length || onDisk[i]) total += byteLen('bl_' + i) + lens[i];
+    }
+    return { chunks: chunks, total: total };
+  }
+
   /** 용량 한도 검사. 넘으면 QUOTA 오류(쓰기 전에 거른다). */
   function checkQuota(built, otherBytes) {
     var total = built.total + (otherBytes || 0);
@@ -323,7 +453,7 @@
 
     var newUids = {};
     ops.forEach(function (o) { if (o.op === 'add') newUids[o.uid] = 1; });
-    var built = buildChunks(Array.from(merged.entries()), function (uid) { return !!newUids[uid]; });
+    var built = planChunks(parsed, ops, function (uid) { return !!newUids[uid]; });
     // 용량 사전 검사는 목록이 커지는 쓰기에만 한다. 추정은 근사치라, 브라우저가 이미 받아 준 목록을
     // 줄이는 쓰기(해제 등)까지 막으면 한도 근처 사용자가 영영 정리할 수 없다 — 최종 판단은 브라우저에 맡긴다.
     var diskTotal = quotaLen('bl_meta', { ver: SCHEMA_VER });
@@ -333,6 +463,8 @@
     var toSet = {};
     if (!parsed.metaOk) toSet.bl_meta = { ver: SCHEMA_VER };
     for (var i = 0; i < built.chunks.length; i++) {
+      // 디스크에 없던 빈 칸은 쓰지 않는다(다른 기기가 같은 번호에 쓴 항목을 '[]'로 덮을 수 있음 — #26)
+      if (!built.chunks[i].length && parsed.chunkIdx.indexOf(i) < 0) continue; // 손상 청크(디스크엔 있음)는 '[]'로 덮는다
       if (parsed.chunkStr[i] !== JSON.stringify(built.chunks[i])) toSet['bl_' + i] = built.chunks[i];
     }
     var stale = parsed.chunkIdx
@@ -351,23 +483,12 @@
     }
   }
 
-  /** 현재 pending 전부를 한 번에 저장한다. 실패하면 그 변경들을 되돌리고 reject. */
-  async function persistRun() {
-    lastRead = null;
-    if (!contextAlive()) {
-      var dead = coded('CONTEXT_INVALIDATED', '확장 컨텍스트가 무효합니다(확장 업데이트·재로드 후 남은 페이지).');
-      rollback(snapshotOps());
-      throw dead;
-    }
-    if (!hasStorage()) return; // 저장소 없는 환경(테스트 등) — 메모리 전용
-
-    var ops = snapshotOps();
-    if (!ops.length) return;
-
+  /** ops를 저장한다(일시 오류는 백오프 재시도). 결과: { ok: true } 또는 { ok: false, err }. */
+  async function tryWrite(ops) {
     for (var attempt = 0; ; attempt++) {
       try {
         await writeMerged(ops);
-        break;
+        return { ok: true };
       } catch (e) {
         var code = classify(e);
         if (code === 'WRITE_FAILED' && attempt < RETRY_DELAYS_MS.length) {
@@ -375,39 +496,99 @@
           await sleep(RETRY_DELAYS_MS[attempt]);
           continue;
         }
-        if (lastRead) disk = lastRead;
-        rollback(ops);
-        throw (e && e.code === code) ? e : coded(code, String((e && e.message) || e), e);
+        return { ok: false, err: (e && e.code === code) ? e : coded(code, String((e && e.message) || e), e) };
       }
     }
+  }
 
-    // 성공: 이번에 실은 변경만 pending에서 뺀다(그사이 같은 uid에 새 변경이 오면 seq가 달라 남는다).
-    ops.forEach(function (o) {
-      var p = pending.get(o.uid);
-      if (p && p.seq === o.seq) pending.delete(o.uid);
-    });
-    recompute(true); // 읽기에서 발견한 외부 변경만 diff로 나간다(자기 변경은 이미 map에 반영돼 있음)
+  /** 목록을 키우는 변경인가(새 차단, 또는 더 커지는 닉 변경). 해제·크기가 늘지 않는 변경은 아니다. */
+  function grows(o, base) {
+    if (o.op !== 'add') return false;
+    if (o.imp) return true; // 가져오기는 한 묶음으로만 성공·실패한다(부분 가져오기 없음 — 계약 C10)
+    var old = base && base.get(o.uid);
+    if (!old) return true;
+    return valueLen([o.uid, canonRec(o.rec)]) > valueLen([o.uid, old]);
+  }
+
+  /**
+   * 현재 pending을 한 번에 저장하고, 변경마다 결과를 알린다(이 실행 자체는 항상 resolve).
+   * 용량 초과로 실패하면 줄이는 변경(해제 등)만 모아 한 번 더 써서, 늘리는 변경만 거절한다(#27).
+   */
+  async function persistRun() {
+    lastRead = null;
+    var ops = snapshotOps();
+    try {
+      if (!contextAlive()) {
+        rollback(ops, coded('CONTEXT_INVALIDATED', '확장 컨텍스트가 무효합니다(확장 업데이트·재로드 후 남은 페이지).'));
+        return;
+      }
+      if (!hasStorage()) { // 저장소 없는 환경(테스트 등) — 메모리 전용: 변경을 disk에 얹고 성공 처리
+        ops.forEach(function (o) { if (o.op === 'add') disk.set(o.uid, o.rec); else disk.delete(o.uid); });
+        settle(ops);
+        recompute(false);
+        return;
+      }
+      if (!ops.length) return;
+
+      var res = await tryWrite(ops);
+      if (res.ok) { settle(ops); recompute(true); return; }
+
+      var base = lastRead;
+      if (res.err.code === 'QUOTA' && base) {
+        var shrink = ops.filter(function (o) { return !grows(o, base); });
+        var grow = ops.filter(function (o) { return grows(o, base); });
+        if (shrink.length && grow.length) {
+          var res2 = await tryWrite(shrink);
+          if (res2.ok) {
+            settle(shrink);
+            rollback(grow, res.err);
+            return;
+          }
+          if (lastRead) disk = lastRead;
+          rollback(grow, res.err);   // 늘리는 변경은 원래 이유(QUOTA)로
+          rollback(shrink, res2.err); // 줄이는 변경은 재시도의 이유로
+          return;
+        }
+      }
+      if (lastRead) disk = lastRead;
+      rollback(ops, res.err);
+    } catch (e) {
+      // 예상 못 한 예외에도 기다리는 호출자가 영원히 멈추지 않게 실패로 정리한다.
+      console.warn('[FMKBlind.store] 쓰기 처리 중 예외 — 변경을 되돌림.', e);
+      rollback(ops, (e && e.code) ? e : coded('WRITE_FAILED', String((e && e.message) || e), e));
+    }
   }
 
   function snapshotOps() {
     var ops = [];
-    pending.forEach(function (p, uid) { ops.push({ uid: uid, op: p.op, rec: p.rec, seq: p.seq }); });
+    pending.forEach(function (p, uid) { ops.push({ uid: uid, op: p.op, rec: p.rec, seq: p.seq, imp: p.imp }); });
     return ops;
   }
 
-  /** 실패한 변경을 pending에서 빼고 map을 되돌린다(구독자에 통지 → 화면도 원상 복구). */
-  function rollback(ops) {
+  /** 저장된 변경을 pending에서 빼고 기다리던 호출자에게 성공을 알린다(그사이 같은 uid에 새 변경이 오면 남긴다). */
+  function settle(ops) {
     ops.forEach(function (o) {
       var p = pending.get(o.uid);
-      if (p && p.seq === o.seq) pending.delete(o.uid);
+      if (p && p.seq === o.seq) {
+        pending.delete(o.uid);
+        p.waiters.forEach(function (w) { w.resolve(); });
+      }
+    });
+  }
+
+  /** 실패한 변경을 pending에서 빼고 map을 되돌린다(구독자에 통지 → 화면도 원상 복구). 호출자는 err로 reject. */
+  function rollback(ops, err) {
+    ops.forEach(function (o) {
+      var p = pending.get(o.uid);
+      if (p && p.seq === o.seq) {
+        pending.delete(o.uid);
+        p.waiters.forEach(function (w) { w.reject(err); });
+      }
     });
     recompute(true);
   }
 
-  /**
-   * 쓰기를 요청한다. 아직 시작하지 않은 실행이 있으면 거기에 함께 실리고, 없으면 새로 큐에 넣는다.
-   * 반환 Promise: resolve = sync에 저장 완료, reject = 저장 실패(코드 포함, 변경은 되돌려짐).
-   */
+  /** 쓰기 실행을 요청한다. 아직 시작하지 않은 실행이 있으면 거기에 함께 실린다. */
   function requestPersist() {
     if (queuedRun) return queuedRun;
     var run = enqueueSerial(function () {
@@ -418,24 +599,31 @@
     return run;
   }
 
-  function addOp(uid, op, rec) {
-    pending.set(uid, { op: op, rec: rec, seq: ++opSeq, run: null });
+  function newWaiter() {
+    var w = {};
+    w.promise = new Promise(function (resolve, reject) { w.resolve = resolve; w.reject = reject; });
+    return w;
   }
 
-  /** uid들의 변경을 실어 갈 쓰기를 요청하고, 각 pending 항목에 그 실행을 기록한다. */
-  function persistOps(uids) {
-    var run = requestPersist();
-    uids.forEach(function (uid) {
-      var p = pending.get(uid);
-      if (p) p.run = run;
-    });
-    return run;
+  /**
+   * uid에 변경을 올리고 그 변경의 결과 Promise를 돌려준다(resolve = 저장 완료, reject = 실패·되돌림).
+   * 같은 uid의 아직 저장 안 된 변경이 있으면 새 변경이 대신하고, 앞 호출자도 새 변경의 결과를 받는다.
+   */
+  function addOp(uid, op, rec, imp) {
+    var prev = pending.get(uid);
+    var w = newWaiter();
+    pending.set(uid, { op: op, rec: rec, seq: ++opSeq, imp: !!imp, waiters: (prev ? prev.waiters : []).concat([w]) });
+    requestPersist();
+    return w.promise;
   }
 
-  /** 이미 미저장 변경이 있는 uid면 그 변경을 실은 실행을, 아니면 null(→ 이미 저장된 상태). */
-  function carryingRun(uid, op) {
+  /** 이미 미저장 변경이 있는 uid면 그 변경의 결과를, 아니면 null(→ 이미 저장된 상태). */
+  function pendingResult(uid, op) {
     var p = pending.get(uid);
-    return (p && p.op === op && p.run) ? p.run : null;
+    if (!p || p.op !== op) return null;
+    var w = newWaiter();
+    p.waiters.push(w);
+    return w.promise;
   }
 
   // ---- 읽기(load·refresh) -----------------------------------------
@@ -552,14 +740,15 @@
       if (existing) {
         if (typeof nick !== 'string' || nick === existing.nick) {
           // 바뀐 게 없으면 쓰지 않는다. 아직 저장 중인 차단이면 그 결과(실패 시 reject)를 따른다.
-          return carryingRun(uid, 'add') || Promise.resolve();
+          return pendingResult(uid, 'add') || Promise.resolve();
         }
-        addOp(uid, 'add', { nick: nick, addedAt: existing.addedAt });
-      } else {
-        addOp(uid, 'add', { nick: typeof nick === 'string' ? nick : '', addedAt: nowMs() });
+        var p1 = addOp(uid, 'add', { nick: nick, addedAt: existing.addedAt });
+        recompute(false);
+        return p1;
       }
+      var p2 = addOp(uid, 'add', { nick: typeof nick === 'string' ? nick : '', addedAt: nowMs() });
       recompute(false);
-      return persistOps([uid]);
+      return p2;
     },
 
     /**
@@ -569,10 +758,10 @@
      */
     unblock: function (uid) {
       uid = String(uid);
-      if (!map.has(uid)) return carryingRun(uid, 'del') || Promise.resolve();
-      addOp(uid, 'del');
+      if (!map.has(uid)) return pendingResult(uid, 'del') || Promise.resolve();
+      var p = addOp(uid, 'del');
       recompute(false);
-      return persistOps([uid]);
+      return p;
     },
 
     /** 차단 목록 스냅샷(복사본). addedAt 내림차순. @returns {Array<{uid:string,nick:string,addedAt:number}>} */
@@ -657,9 +846,10 @@
         return Promise.reject(e);
       }
 
-      adds.forEach(function (a) { addOp(a[0], 'add', a[1]); });
+      var results = adds.map(function (a) { return addOp(a[0], 'add', a[1], true); });
       recompute(false);
-      return persistOps(adds.map(function (a) { return a[0]; })).then(function () { return result; });
+      // 가져오기 항목은 늘 '늘리는 변경'이라(#27 분리에서도) 한 묶음으로 성공·실패한다. 실패하면 첫 오류로 reject.
+      return Promise.all(results).then(function () { return result; });
     }
   };
 

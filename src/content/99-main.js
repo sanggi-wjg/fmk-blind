@@ -98,6 +98,8 @@
           NS.toast.show(saveFailMessage(e));
           return;
         }
+        // 저장을 기다리는 사이 같은 유저를 바로 해제했으면 그 결과가 이긴다(숨기지 않는다).
+        if (!store.isBlocked(uid)) return;
         nickIndex = null;
         NS.hide.hideByUid(uid); // 현재 탭 즉시 숨김 반영
         NS.hide.scanNickRows(document, uidForNick);
@@ -112,6 +114,7 @@
           NS.toast.show(saveFailMessage(e));
           return;
         }
+        if (store.isBlocked(uid)) return; // 그사이 다시 차단했으면 그 결과가 이긴다
         nickIndex = null;
         NS.hide.unhideByUid(uid); // 현재 탭 즉시 복구
         // 같은 닉네임의 다른 차단 uid 가 남아 있으면 방금 복구된 목록 행을 그 uid 로 다시 숨긴다.
