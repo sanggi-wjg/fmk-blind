@@ -5,31 +5,27 @@
  * **동일 파일을 공유**한다. 상태는 chrome.storage.sync로 동기화된다.
  *
  * 공개 계약: window.FMKBlind.store = { load, isBlocked, block, unblock, list, count, onChange, importMany }
- *   - 6개(load~count)는 v1 FROZEN. onChange는 가산적 7번째 선택 API(2026-06-15, 라이브 동기 C9).
- *     importMany는 가산적 8번째 선택 API(2026-07-08, 배치 가져오기 C10).
  * 자세한 시그니처/불변식: .claude/workspace/store-api-contract.md
  *
- * 저장 레이아웃:
- *   bl_meta = { ver: 1 }                         // 스키마 버전
+ * 저장 레이아웃(하위 호환 — 기존 데이터 그대로 읽음):
+ *   bl_meta = { ver: 1 }                          // 스키마 버전
  *   bl_0, bl_1, ... bl_N                          // 차단 목록을 8KB 미만 청크로 분할
- *   각 청크 값 = [[uid, { nick, addedAt }], ...]  // 네이티브 배열(문자열 이중직렬화 금지)
+ *   각 청크 값 = [[uid, { addedAt, nick }], ...]   // 네이티브 배열(문자열 이중직렬화 금지)
  *
- * 제약(반드시 준수):
- *   - 항목당 ~8KB(8,192B), 전체 ~100KB(102,400B)
- *   - block/unblock은 즉시·직렬 영속화(반환 Promise resolve = sync 쓰기 완료, C3), 변경된 청크만 set·stale 청크 remove
- *   - persist는 persistNow로 직렬화(in-flight 체인 + dirty coalesce, 재진입/경쟁 안전)
- *   - 레이트리밋(분당 120/시간당 1,800) 초과 시 C7 폴백(경고 + schedulePersist 디바운스 재시도). 디바운스는 이제 실패 재시도 경로에서만 쓰인다(언로드 자동 flush는 제거 — stale 탭 되쓰기 방지)
+ * 메모리 모델(2026-10-05, 이슈 #13·#14·#15):
+ *   map(공개 조회 대상) = disk(마지막으로 읽은 저장소 상태) ⊕ pending(아직 저장되지 않은 로컬 변경).
+ *   - 쓰기는 항상 **읽기 → 병합 → 쓰기**(read-merge-write)다. 직렬화 큐 안에서 저장소를 새로 읽고,
+ *     그 위에 pending 변경만 얹어 청크를 만든다. 그래서 변경 알림을 놓친 탭이라도 다른 곳의 변경을
+ *     덮어쓰지 않고(#15), 읽기에 실패하면 아예 쓰지 않는다(#14).
+ *   - 쓰기 실패는 숨기지 않는다(#13). 용량 초과·확장 컨텍스트 무효는 재시도 없이, 그 밖의 오류는
+ *     짧은 백오프로 몇 번 재시도한 뒤 **reject**하고, 실패한 변경은 메모리에서 되돌린다(구독자에 통지).
+ *   - 청크 비교는 디스크와 새 청크를 똑같이 정규화한 레코드({addedAt, nick}) 문자열로 한다. 디스크에
+ *     어떤 키 순서로 저장됐든(Chrome은 키 정렬해서 돌려준다) 바뀌지 않은 청크는 다시 쓰지 않는다.
  *
- * 라이브 동기(C9, 2026-06-15 구현): chrome.storage.onChanged로 외부(다른 탭/팝업/기기) 변경 시
- *   외부 델타만 메모리 맵에 reconcile하고(로컬 미영속 항목 보존) persistedChunks 스냅샷을 스토리지
- *   권위로 정합한 뒤 구독자에게 diff 통지(onChange). 핸들러는 절대 sync에 쓰지 않으며(읽기+메모리만)
- *   persist와 같은 직렬화 큐에서 순차 실행 → 피드백 루프·인터리브 없음. reconcile + 스냅샷 정합이
- *   잔여 엣지 I2(해제 후 되살림)와 마이크로태스크 경쟁(미영속 항목 유실)을 함께 닫는다.
- *
- * v1 범위 밖(구현 금지): 압축.
- *   내보내기: 새 API 불필요 — 팝업이 list()(uid/nick/addedAt 복사본) 결과를 JSON으로 직렬화.
- *   가져오기: importMany(items)로 배치 반영 후 1회 flush(2026-07-08 구현). 항목별 block() 남발로 인한
- *             sync 레이트리밋(분당 120/시간당 1,800) 압박을 피한다.
+ * 남은 한계:
+ *   - 같은 브라우저 안에선 읽기→쓰기 사이가 수 ms라 사실상 안전하다. 기기 간에는 sync 전파 전에 두 기기가
+ *     각각 쓰면 Chrome sync가 키(청크) 단위로 나중 쓰기를 남겨, 겹친 청크의 다른 변경이 사라질 수 있다.
+ *   - 이 보호(읽은 뒤 병합)는 0.8.0 이상끼리만 성립한다. 0.7.x가 남은 기기·탭은 예전처럼 덮어쓸 수 있다.
  */
 (function () {
   'use strict';
@@ -41,519 +37,509 @@
 
   // ---- 상수 -------------------------------------------------------
   var SCHEMA_VER = 1;
-  var CHUNK_BUDGET = 7168;   // 청크 값 1개의 바이트 상한(8,192B 안전마진)
-  var TOTAL_BUDGET = 102400; // sync 전체 한도(~100KB)
-  var QUOTA_WARN = Math.floor(TOTAL_BUDGET * 0.9); // 90% 임박 경고
-  var DEBOUNCE_MS = 500;     // 쓰기 디바운스
+  var QUOTA_BYTES = 102400;         // sync 전체 한도
+  var QUOTA_BYTES_PER_ITEM = 8192;  // 항목(키+값) 한도
+  var MAX_ITEMS = 512;              // 키 개수 한도
+  var CHUNK_BUDGET = 7168;          // 청크 값 1개의 바이트 상한(항목 한도 안전마진)
+  var QUOTA_WARN = Math.floor(QUOTA_BYTES * 0.9);
+  var NICK_MAX = 64;                // 가져오기 닉네임 길이 상한(비정상 파일 방어)
+  var RETRY_DELAYS_MS = [1000, 2000, 4000]; // 일시 오류 재시도 간격
+  var LOAD_RETRY_MS = 300;          // load 읽기 1회 재시도 간격
 
   // ---- 내부 상태 --------------------------------------------------
-  /** @type {Map<string, {nick: string, addedAt: number}>} 메모리 맵 */
+  /** @type {Map<string, {nick: string, addedAt: number}>} 마지막으로 읽은 저장소 상태(저장 순서 유지) */
+  var disk = new Map();
+  /** @type {Map<string, {op: 'add'|'del', rec?: {nick: string, addedAt: number}, seq: number}>} 미저장 로컬 변경 */
+  var pending = new Map();
+  var opSeq = 0;
+  /** @type {Map<string, {nick: string, addedAt: number}>} 공개 조회 대상 = disk ⊕ pending */
   var map = new Map();
 
-  /** @type {Promise<void>|null} load 멱등 보장 */
+  /** @type {Promise<void>|null} 성공한(또는 진행 중인) load. 실패하면 null로 되돌려 다음 호출이 재시도 */
   var loadPromise = null;
 
-  /** 현재 sync에 반영돼 있다고 보는 청크 스냅샷(인덱스별 JSON 문자열). 변경 청크만 쓰기 위함 */
-  var persistedChunks = [];
-  var metaPersisted = false;
-
-  // 디바운스 제어
-  var persistTimer = null;
-
-  // 직렬화 제어: 한 번에 하나의 persistOnce만 실행되도록 in-flight Promise를 체인한다.
-  // 연속 block→unblock가 직접 즉시쓰기를 호출해도 persistOnce가 겹치지 않게 하여
-  // persistedChunks 스냅샷 경쟁(둘이 동시에 스냅샷→diff→스냅샷 갱신)으로 인한 꼬임을 막는다.
-  /** @type {Promise<void>|null} 현재 실행 중인 persist 체인 꼬리 */
-  var persistInFlight = null;
-  /** persist 진행 중에 또 변경이 들어왔는지 — 체인 종료 후 한 번 더 돌려 coalesce */
-  var persistDirty = false;
-
-  // 전역 직렬화 큐: persist(로컬 write)와 onChanged-rebuild(외부 변경 반영)를 **하나의 tail
-  // Promise 체인**에 모두 태운다. 핵심 불변식:
-  //   ① 외부 onChanged rebuild는 진행 중이던 로컬 write가 **커밋된 뒤** 실행된다
-  //      → 스토리지가 (로컬 write + 외부 변경) 합집합을 반영한 상태에서 read하므로 rebuild가 둘 다 정확히 반영.
-  //   ② rebuild는 절대 persist와 인터리브되지 않는다(둘 다 같은 큐에서 순차 실행).
-  // rebuild는 읽기+메모리 갱신만 하고 sync에 쓰지 않으므로 피드백 루프가 없다.
-  /** @type {Promise<any>} 직렬화 큐의 꼬리 */
+  // 전역 직렬화 큐: 쓰기(persistRun)와 외부 변경 반영(refresh)을 하나의 체인에서 순서대로 실행한다.
+  /** @type {Promise<any>} */
   var serialTail = Promise.resolve();
+  /** 큐에 들어갔지만 아직 시작하지 않은 쓰기 실행(이후 변경은 이 실행에 함께 실린다) */
+  var queuedRun = null;
+  /** 큐에 들어갔지만 아직 시작하지 않은 refresh(중복 예약 방지) */
+  var queuedRefresh = null;
+  /** 진행 중인 쓰기 실행이 마지막으로 읽은 디스크 상태(실패해도 반영) */
+  var lastRead = null;
 
-  /**
-   * task(()=>Promise)를 직렬화 큐 꼬리에 이어붙이고, 그 task의 완료 Promise를 반환한다.
-   * task가 throw해도 큐 자체는 끊기지 않는다(다음 task가 계속 진행).
-   * @param {function(): (Promise<any>|any)} task
-   * @returns {Promise<any>}
-   */
-  function enqueueSerial(task) {
-    var run = serialTail.then(function () { return task(); });
-    // 큐 꼬리는 task 성패와 무관하게 계속 이어지도록 swallow.
-    serialTail = run.then(function () {}, function () {});
-    return run;
-  }
-
-  // ---- onChanged 라이브 동기 ---------------------------------------
-  /** @type {Array<function({added: string[], removed: string[]}): void>} 구독자 콜백 */
+  /** @type {Array<function({added: string[], removed: string[]}): void>} */
   var changeSubscribers = [];
-
-  /**
-   * 외부(다른 탭/팝업/기기) sync 변경을 메모리에 **reconcile(외부 델타만 적용)**로 반영하고
-   * 구독자에게 통지한다. 직렬화 큐에서 실행되므로 진행 중 persist 커밋 뒤에 돈다(인터리브 없음).
-   *
-   * clobber(map.clear) 대신 reconcile를 쓰는 이유(경쟁 수정): 이 핸들러가 await(syncGet) 중인
-   * 사이 이 컨텍스트에서 막 block()한 항목은 map엔 있으나 디스크엔 아직 없다 — clobber면 그 미영속
-   * 항목이 지워지고 이어진 persist가 못 써 **영구 유실**(+ 잘못된 removed 통지)된다. reconcile는
-   * "디스크 vs 우리가 마지막에 안 디스크 스냅샷(persistedChunks=prevMap)"의 **외부 델타만** map에
-   * 적용하므로, prevMap에도 디스크에도 없는 로컬 미영속 항목은 손대지 않아 보존된다(레이트리밋 C7
-   * 재시도 대기분도 동일하게 보존).
-   *
-   * 자기-쓰기 에코: 디스크 == prevMap이라 델타가 비어 no-op(콜백 생략). 핸들러는 읽기 전용(쓰기 없음).
-   * @returns {Promise<void>}
-   */
-  async function applyExternalChange() {
-    if (!hasStorage()) return;
-    var all;
-    try {
-      all = await syncGet(null);
-    } catch (e) {
-      console.warn('[FMKBlind.store] onChanged sync 읽기 실패 — 무시.', e);
-      return;
-    }
-
-    var parsed = parseSnapshot(all);
-
-    // 디스크(권위) uid→rec
-    var diskMap = new Map();
-    for (var i = 0; i < parsed.entries.length; i++) diskMap.set(parsed.entries[i][0], parsed.entries[i][1]);
-
-    // 우리가 마지막으로 안 디스크 스냅샷(persistedChunks) → prevMap. 외부 델타 판정의 기준선.
-    var prevMap = parsePersistedSnapshot();
-
-    var added = [];   // 외부에서 새로 차단(map에 새로 등장) → 현재 탭 숨김 대상
-    var removed = []; // 외부에서 해제 → 현재 탭 복구 대상
-
-    // 외부 추가/변경: 디스크에 있고 prev와 다르거나 없는 uid를 map에 반영.
-    diskMap.forEach(function (rec, uid) {
-      var prev = prevMap.get(uid);
-      if (!prev || prev.nick !== rec.nick || prev.addedAt !== rec.addedAt) {
-        var wasInMap = map.has(uid);
-        map.set(uid, rec);
-        if (!wasInMap) added.push(uid); // 새로 등장한 것만 통지(이미 있으면 데이터 갱신뿐)
-      }
-    });
-
-    // 외부 제거: prev엔 있었는데 디스크에 없는 uid만 map에서 제거.
-    // 로컬 미영속 항목은 prev에 없으므로 이 루프에 안 걸려 보존된다(유실·오통지 방지).
-    prevMap.forEach(function (_rec, uid) {
-      if (!diskMap.has(uid)) {
-        if (map.delete(uid)) removed.push(uid);
-      }
-    });
-
-    // 스냅샷(persistedChunks)·메타 플래그(metaPersisted)를 디스크 권위로 재정규화
-    // → 직후 로컬 persist가 미영속 항목을 변경분으로 올바로 기록(I2 유지).
-    persistedChunks = parsed.snapshot;
-    metaPersisted = parsed.metaOk;
-
-    if (added.length === 0 && removed.length === 0) return;
-    notifyChange({ added: added, removed: removed });
-  }
-
-  /** 등록된 구독자에게 diff 통지. 한 콜백의 예외가 다른 구독자/스토어를 깨지 않도록 격리. */
-  function notifyChange(diff) {
-    // 호출 중 unsubscribe가 배열을 건드려도 안전하도록 복사본 순회.
-    var subs = changeSubscribers.slice();
-    for (var i = 0; i < subs.length; i++) {
-      try {
-        subs[i](diff);
-      } catch (e) {
-        console.warn('[FMKBlind.store] onChange 구독자 콜백 예외(격리됨).', e);
-      }
-    }
-  }
-
-  /**
-   * chrome.storage.onChanged 리스너 등록(존재 가드). sync 영역의 bl_*(숫자)/bl_meta 변경만 처리.
-   * 외부·자기 쓰기 모두 들어오지만, 자기-쓰기는 diff가 비어 무해(applyExternalChange 참고).
-   */
-  function installOnChangedListener() {
-    if (!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged
-          && typeof chrome.storage.onChanged.addListener === 'function')) {
-      return; // onChanged 미지원 컨텍스트 → 라이브 동기 없이도 정상 동작(load 시점 동기화).
-    }
-    chrome.storage.onChanged.addListener(function (changes, areaName) {
-      if (areaName !== 'sync') return;
-      var relevant = false;
-      for (var key in changes) {
-        if (!Object.prototype.hasOwnProperty.call(changes, key)) continue;
-        if (key === 'bl_meta' || /^bl_\d+$/.test(key)) { relevant = true; break; }
-      }
-      if (!relevant) return;
-      // 직렬화 큐에 합류: 진행 중 로컬 write 커밋 뒤 rebuild가 돈다(인터리브 방지).
-      enqueueSerial(applyExternalChange);
-    });
-  }
 
   // ---- 유틸 -------------------------------------------------------
   function hasStorage() {
-    return (typeof chrome !== 'undefined') && chrome.storage && chrome.storage.sync;
+    try {
+      return (typeof chrome !== 'undefined') && !!chrome.storage && !!chrome.storage.sync;
+    } catch (e) { return false; }
+  }
+  // 스크립트 시작 시 저장소가 있었는지. 나중에 사라지면(확장 업데이트로 고아가 된 content script)
+  // "메모리 전용 모드"가 아니라 컨텍스트 무효로 취급해야 한다.
+  var storageAtInit = hasStorage();
+  var runtimeIdAtInit = (function () {
+    try { return (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) || null; }
+    catch (e) { return null; }
+  })();
+
+  /** 확장 컨텍스트가 살아 있는가. 업데이트·재로드 뒤 남은 content script는 runtime.id가 사라진다. */
+  function contextAlive() {
+    try {
+      if (typeof chrome === 'undefined') return !storageAtInit;
+      if (runtimeIdAtInit && !(chrome.runtime && chrome.runtime.id)) return false;
+      return !storageAtInit || hasStorage();
+    } catch (e) { return false; }
   }
 
-  /** UTF-8 바이트 길이(크롬이 항목 크기를 재는 기준과 동일) */
   function byteLen(str) {
     try { return new TextEncoder().encode(str).length; }
     catch (e) { return unescape(encodeURIComponent(str)).length; }
   }
 
+  var LINE_SEP_RE = new RegExp('[\\u2028\\u2029]', 'g'); // U+2028/U+2029(소스에 원문자로 쓰면 정규식이 깨짐)
+  // 따옴표 밖의 큰 정수(addedAt 등). uid는 문자열이라 앞에 '"'가 와서 걸리지 않는다.
+  var BARE_BIG_INT_RE = /[:,\[]-?\d{10,}(?=[,\]}])/g;
+
+  /**
+   * 값 하나가 Chrome sync 용량에서 차지하는 바이트(키 제외)를 근사한다. Chrome은 base::JSONWriter로
+   * 직렬화한 UTF-8 길이를 센다: JSON.stringify와 같되 '<'와 U+2028/U+2029를 \uXXXX(6바이트)로 쓰고,
+   * int32 밖의 정수(addedAt)에 ".0"을 붙인다. Firefox는 ".0"을 붙이지 않아 이 값보다 작게 센다.
+   */
+  function valueLen(value) {
+    var s = JSON.stringify(value);
+    var n = byteLen(s);
+    n += 5 * ((s.match(/</g) || []).length);
+    n += 3 * ((s.match(LINE_SEP_RE) || []).length);
+    n += 2 * ((s.match(BARE_BIG_INT_RE) || []).length);
+    return n;
+  }
+  function quotaLen(key, value) { return byteLen(key) + valueLen(value); }
+
   function nowMs() { return Date.now(); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /** 오류에 code를 붙여 돌려준다(QUOTA | CONTEXT_INVALIDATED | WRITE_FAILED | READ_FAILED). */
+  function coded(code, message, cause) {
+    var e = new Error(message);
+    e.code = code;
+    if (cause) e.cause = cause;
+    return e;
+  }
+
+  /** 쓰기 오류 분류. 비재시도: QUOTA·CONTEXT_INVALIDATED. 나머지(레이트리밋 포함)는 재시도 대상. */
+  var OUR_CODES = { QUOTA: 1, CONTEXT_INVALIDATED: 1, WRITE_FAILED: 1, READ_FAILED: 1 };
+  function classify(e) {
+    if (e && typeof e.code === 'string' && OUR_CODES[e.code]) return e.code; // DOMException 숫자 code 등은 무시
+    var msg = String((e && e.message) || e);
+    if (!contextAlive() || /context invalidated/i.test(msg)) return 'CONTEXT_INVALIDATED';
+    if (/MAX_WRITE_OPERATIONS/i.test(msg)) return 'WRITE_FAILED'; // 레이트리밋(메시지에 quota 포함 — 먼저 거른다)
+    if (/quota|QUOTA_BYTES|MAX_ITEMS/i.test(msg)) return 'QUOTA';
+    return 'WRITE_FAILED';
+  }
+
+  function enqueueSerial(task) {
+    var run = serialTail.then(function () { return task(); });
+    serialTail = run.then(function () {}, function () {}); // 큐는 task 성패와 무관하게 이어진다
+    return run;
+  }
 
   // chrome.storage.sync 콜백 → Promise 래퍼(content/popup 양쪽 동작)
-  function syncGet(keys) {
+  function syncCall(method, arg) {
     return new Promise(function (resolve, reject) {
       try {
-        chrome.storage.sync.get(keys, function (res) {
+        chrome.storage.sync[method](arg, function (res) {
           var err = chrome.runtime && chrome.runtime.lastError;
-          if (err) reject(new Error(err.message)); else resolve(res || {});
+          if (err) reject(new Error(err.message)); else resolve(res);
         });
       } catch (e) { reject(e); }
     });
   }
-  function syncSet(obj) {
-    return new Promise(function (resolve, reject) {
-      try {
-        chrome.storage.sync.set(obj, function () {
-          var err = chrome.runtime && chrome.runtime.lastError;
-          if (err) reject(new Error(err.message)); else resolve();
-        });
-      } catch (e) { reject(e); }
-    });
-  }
-  function syncRemove(keys) {
-    return new Promise(function (resolve, reject) {
-      try {
-        chrome.storage.sync.remove(keys, function () {
-          var err = chrome.runtime && chrome.runtime.lastError;
-          if (err) reject(new Error(err.message)); else resolve();
-        });
-      } catch (e) { reject(e); }
-    });
-  }
+  function syncGet(keys) { return syncCall('get', keys).then(function (r) { return r || {}; }); }
+  function syncSet(obj) { return syncCall('set', obj); }
+  function syncRemove(keys) { return syncCall('remove', keys); }
 
-  // ---- 청킹 -------------------------------------------------------
-  /**
-   * 메모리 항목 배열을 청크로 분할. 각 청크는 JSON 직렬화 시 CHUNK_BUDGET 미만.
-   * @param {Array<[string, {nick:string, addedAt:number}]>} entries
-   * @returns {Array<Array<[string, {nick:string, addedAt:number}]>>}
-   */
-  function buildChunks(entries) {
-    var chunks = [];
-    var cur = [];
-    for (var i = 0; i < entries.length; i++) {
-      var entry = entries[i];
-      var next = cur.concat([entry]);
-      if (cur.length > 0 && byteLen(JSON.stringify(next)) > CHUNK_BUDGET) {
-        chunks.push(cur);
-        cur = [entry];
-      } else {
-        cur = next;
-      }
-      // 단일 항목 자체가 한도 초과(비정상 닉 등) → 경고(쓰기 실패는 catch에서 흡수)
-      if (cur.length === 1 && byteLen(JSON.stringify(cur)) > CHUNK_BUDGET) {
-        console.warn('[FMKBlind.store] 단일 항목이 청크 한도를 초과합니다(uid=' + entry[0] + '). 8KB 제약 위반 가능.');
-      }
-    }
-    if (cur.length > 0) chunks.push(cur);
-    return chunks;
-  }
-
-  // ---- 영속화 -----------------------------------------------------
-  // 메모리 → sync 1회 영속화. 항상 resolve(실패 시 경고 + 디바운스 재시도).
-  // 동기 프리픽스에서 chrome.storage.sync.set IPC를 디스패치하므로 언로드 중 호출돼도 쓰기가 발신된다.
-  async function persistOnce() {
-    if (!hasStorage()) {
-      console.warn('[FMKBlind.store] chrome.storage.sync 미가용 — 메모리 전용 모드(영속화 생략).');
-      return;
-    }
-
-    var entries = Array.from(map.entries());
-    var chunks = buildChunks(entries);
-    var newVals = chunks.map(function (c) { return JSON.stringify(c); });
-
-    // 변경된 청크만 set
-    var toSet = {};
-    if (!metaPersisted) toSet.bl_meta = { ver: SCHEMA_VER };
-    var total = byteLen('bl_meta') + byteLen(JSON.stringify({ ver: SCHEMA_VER }));
-    for (var i = 0; i < chunks.length; i++) {
-      var key = 'bl_' + i;
-      total += byteLen(key) + byteLen(newVals[i]);
-      if (persistedChunks[i] !== newVals[i]) toSet[key] = chunks[i];
-    }
-
-    // 청크 수 감소 → 남는 키 정리(유령 데이터 방지)
-    var staleKeys = [];
-    for (var k = chunks.length; k < persistedChunks.length; k++) staleKeys.push('bl_' + k);
-
-    // 용량 임박 경고
-    if (total > QUOTA_WARN) {
-      console.warn('[FMKBlind.store] 차단 목록이 sync 한도(' + TOTAL_BUDGET +
-        'B)에 임박합니다(' + total + 'B). 항목 정리 또는 압축(TODO)이 필요합니다.');
-    }
-
-    var setKeys = Object.keys(toSet);
-    if (setKeys.length === 0 && staleKeys.length === 0) {
-      return; // 변경 없음
-    }
-
-    try {
-      if (setKeys.length > 0) await syncSet(toSet);
-      if (staleKeys.length > 0) await syncRemove(staleKeys);
-      // 성공 시에만 스냅샷 갱신
-      persistedChunks = newVals;
-      metaPersisted = true;
-    } catch (e) {
-      // 메모리 상태는 유지, 경고 후 재시도(schedulePersist) 경로로 재시도
-      console.warn('[FMKBlind.store] sync 쓰기 실패 — 메모리 유지, 재시도 예약.', e);
-      schedulePersist();
-    }
+  // ---- 레코드·청크 ------------------------------------------------
+  /** 레코드를 키 정렬된 정규 형태로. Chrome 읽기 결과와 같은 키 순서라 문자열 비교가 안정적이다. */
+  function canonRec(rec) {
+    return { addedAt: Number(rec && rec.addedAt) || 0, nick: (rec && typeof rec.nick === 'string') ? rec.nick : String((rec && rec.nick) || '') };
   }
 
   /**
-   * persistOnce를 직렬 실행한다. 이미 실행 중이면 새로 시작하지 않고 dirty 플래그만 세워
-   * 현재 체인이 끝난 뒤 한 번 더 돌려(coalesce) 최신 메모리 상태를 반영한다.
-   * 반환 Promise는 "이 호출 시점의 변경이 sync에 반영 완료될 때"까지 resolve되지 않는다.
-   * (체인 꼬리를 await → 진행 중이던 쓰기 + 필요 시 coalesce된 후속 쓰기까지 포함)
-   *
-   * persist 작업은 **전역 직렬화 큐(serialTail)**에 태운다 → 외부 onChanged-rebuild와
-   * 같은 체인에서 순차 실행되어 둘이 절대 인터리브되지 않는다(rebuild는 진행 중 write 커밋 뒤 실행).
-   * @returns {Promise<void>}
+   * get(null) 결과에서 차단 목록을 읽는다(순수 함수).
+   * @returns {{entries: Map<string,{nick:string,addedAt:number}>, chunkStr: Object<number,string>, chunkIdx: number[], metaOk: boolean, meta: any, otherBytes: number}}
+   *   chunkStr[i] = 디스크 청크 i의 정규 문자열(손상 청크는 없음 → 다음 쓰기에서 덮어씀)
    */
-  function persistNow() {
-    if (persistInFlight) {
-      // 진행 중인 persist 작업이 끝난 뒤 한 번 더 돌도록 예약하고, 그 꼬리를 반환한다.
-      persistDirty = true;
-      return persistInFlight;
-    }
-    // 직렬화 큐에 합류. coalesce 루프로 진행 중 들어온 변경(dirty)을 흡수.
-    var chain = enqueueSerial(async function run() {
-      do {
-        persistDirty = false;
-        await persistOnce();
-      } while (persistDirty);
+  function parseDisk(all) {
+    var entries = new Map();
+    var chunkStr = {};
+    var otherBytes = 0;
+    var idx = [];
+    Object.keys(all).forEach(function (k) {
+      if (/^bl_\d+$/.test(k)) idx.push(parseInt(k.slice(3), 10));
+      else if (k !== 'bl_meta') otherBytes += quotaLen(k, all[k]); // 우리 키가 아닌 값도 전체 한도를 쓴다
     });
-    // 에러는 persistOnce가 흡수하므로 정상 종료. 종료 시 in-flight 표식 해제.
-    persistInFlight = chain.then(function () {
-      persistInFlight = null;
-    }, function () {
-      persistInFlight = null;
-    });
-    return persistInFlight;
-  }
-
-  function schedulePersist() {
-    if (persistTimer) clearTimeout(persistTimer);
-    persistTimer = setTimeout(function () {
-      persistTimer = null;
-      persistNow();
-    }, DEBOUNCE_MS);
-  }
-
-  /**
-   * 보류 중 디바운스 쓰기를 즉시 반영(awaitable). 타이머를 비우고 직렬 persist를 즉시 실행한다.
-   * persistOnce가 동기 프리픽스에서 sync.set IPC를 디스패치하므로, 언로드 핸들러에서
-   * await 없이 호출돼도 쓰기가 발신된다.
-   * @returns {Promise<void>}
-   */
-  function flushPending() {
-    if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
-    return persistNow();
-  }
-
-  // [제거됨] 언로드(pagehide/visibilitychange) 자동 flush.
-  // 과거 디바운스 모델에선 팝업 조기 종료 시 보류 쓰기를 살리는 안전망이었으나(MAJOR-1),
-  // 현재 block/unblock은 즉시·동기 디스패치로 영속화하므로 비울 보류 쓰기가 없다.
-  // 게다가 이 flush는 "변경되지 않은" stale 탭(팝업이 다른 곳에서 목록을 바꾼 뒤에도
-  // 옛 메모리 맵을 가진 content script)이 새로고침 시 옛 목록을 sync에 되써(resurrection)
-  // 해제를 무효화하는 통로였다. 실제 Chrome 직렬화 차이로 persistOnce의 청크 diff가
-  // 거짓 양성이 되어 stale 맵이 기록됐다. → 통로 자체를 제거한다.
-
-  // ---- 복원 -------------------------------------------------------
-  /**
-   * syncGet 결과(all)에서 bl_*(숫자) 청크를 파싱해 항목 배열 + 정규화된 청크 JSON 스냅샷을 만든다.
-   * load(clobber)·onChanged(reconcile)가 공유하는 순수 파서(부수효과·쓰기 없음).
-   * @param {Object} all  chrome.storage.sync.get(null) 결과
-   * @returns {{entries: Array<[string,{nick:string,addedAt:number}]>, snapshot: Array<string|undefined>, metaOk: boolean, meta: any}}
-   */
-  function parseSnapshot(all) {
-    var indices = Object.keys(all)
-      .filter(function (k) { return /^bl_\d+$/.test(k); })
-      .map(function (k) { return parseInt(k.slice(3), 10); })
-      .sort(function (a, b) { return a - b; });
-
-    var entries = [];
-    for (var j = 0; j < indices.length; j++) {
-      var val = all['bl_' + indices[j]];
+    idx.sort(function (a, b) { return a - b; });
+    for (var j = 0; j < idx.length; j++) {
+      var val = all['bl_' + idx[j]];
       try {
         var arr = Array.isArray(val) ? val : JSON.parse(val); // 배열/문자열 모두 관용 처리
         if (!Array.isArray(arr)) throw new Error('청크 형식 불일치');
+        var canon = [];
         for (var m = 0; m < arr.length; m++) {
           var pair = arr[m];
           if (!pair || pair.length < 2 || !pair[1]) continue;
-          var rec = pair[1];
-          entries.push([String(pair[0]), {
-            nick: typeof rec.nick === 'string' ? rec.nick : String(rec.nick || ''),
-            addedAt: Number(rec.addedAt) || 0
-          }]);
+          var uid = String(pair[0]);
+          var rec = canonRec(pair[1]);
+          entries.set(uid, rec);
+          canon.push([uid, rec]);
         }
+        chunkStr[idx[j]] = JSON.stringify(canon);
       } catch (e) {
-        console.warn('[FMKBlind.store] 손상 청크 건너뜀: bl_' + indices[j], e);
+        console.warn('[FMKBlind.store] 손상 청크 건너뜀: bl_' + idx[j], e);
       }
     }
-
-    // 디스크 청크를 우리가 쓸 형태(네이티브 배열)와 동일 직렬화로 정규화 — 변경분 diff 비교용.
-    var maxIdx = indices.length ? indices[indices.length - 1] : -1;
-    var snapshot = new Array(maxIdx + 1);
-    for (var p = 0; p < indices.length; p++) {
-      var di = indices[p];
-      var dv = all['bl_' + di];
-      try {
-        snapshot[di] = JSON.stringify(Array.isArray(dv) ? dv : JSON.parse(dv));
-      } catch (e) {
-        snapshot[di] = undefined; // 손상 → 다음 쓰기에서 강제 갱신
-      }
-    }
-
     var meta = all.bl_meta;
-    return { entries: entries, snapshot: snapshot, metaOk: !!(meta && meta.ver === SCHEMA_VER), meta: meta };
+    return { entries: entries, chunkStr: chunkStr, chunkIdx: idx, metaOk: !!(meta && meta.ver === SCHEMA_VER), meta: meta, otherBytes: otherBytes };
   }
 
   /**
-   * 현재 persistedChunks(우리가 마지막으로 안 디스크 스냅샷, 인덱스별 JSON 문자열)를 uid→rec Map으로 파싱.
-   * onChanged reconcile의 "이전 디스크 상태(prevMap)" 기준선. 로컬 미영속 항목은 여기 없다.
-   * @returns {Map<string,{nick:string,addedAt:number}>}
+   * 항목 배열을 청크로 나누고 용량을 잰다. 단일 항목이 청크 한도를 넘으면 QUOTA 오류.
+   * @returns {{chunks: Array<Array<[string,{addedAt:number,nick:string}]>>, total: number}}
    */
-  function parsePersistedSnapshot() {
-    var out = new Map();
-    for (var i = 0; i < persistedChunks.length; i++) {
-      var s = persistedChunks[i];
-      if (typeof s !== 'string') continue;
+  function buildChunks(list) {
+    // 청크 값 = '[' + 항목들을 ','로 이은 것 + ']' 이므로 항목 크기를 한 번씩만 재서 더한다.
+    var chunks = [];
+    var cur = [];
+    var curLen = 0; // 현재 청크 값의 바이트(키 제외)
+    var total = quotaLen('bl_meta', { ver: SCHEMA_VER });
+    for (var i = 0; i < list.length; i++) {
+      var entry = [list[i][0], canonRec(list[i][1])];
+      var len = valueLen(entry);
+      if (byteLen('bl_' + chunks.length) + 2 + len > CHUNK_BUDGET) {
+        throw coded('QUOTA', '항목 하나가 저장 한도를 넘습니다(uid=' + entry[0] + ').');
+      }
+      var key = 'bl_' + chunks.length;
+      if (cur.length > 0 && byteLen(key) + curLen + 1 + len > CHUNK_BUDGET) {
+        chunks.push(cur);
+        total += byteLen(key) + curLen;
+        cur = [];
+        curLen = 0;
+      }
+      curLen = cur.length ? curLen + 1 + len : 2 + len;
+      cur.push(entry);
+    }
+    if (cur.length > 0) {
+      total += byteLen('bl_' + chunks.length) + curLen;
+      chunks.push(cur);
+    }
+    return { chunks: chunks, total: total };
+  }
+
+  /** 용량 한도 검사. 넘으면 QUOTA 오류(쓰기 전에 거른다). */
+  function checkQuota(built, otherBytes) {
+    var total = built.total + (otherBytes || 0);
+    if (built.chunks.length + 1 > MAX_ITEMS || total > QUOTA_BYTES) {
+      var e = coded('QUOTA', '동기화 저장 한도(' + QUOTA_BYTES + 'B)를 넘습니다(' + total + 'B).');
+      e.bytes = total;
+      throw e;
+    }
+    if (total > QUOTA_WARN) {
+      console.warn('[FMKBlind.store] 차단 목록이 sync 한도에 임박합니다(' + total + '/' + QUOTA_BYTES + 'B).');
+    }
+  }
+
+  // ---- 파생 상태·통지 --------------------------------------------
+  /** map = disk ⊕ pending 재계산. notify면 이전 map 대비 키 diff를 구독자에게 알린다. */
+  function recompute(notify) {
+    var next = new Map(disk);
+    pending.forEach(function (p, uid) {
+      if (p.op === 'add') next.set(uid, p.rec); else next.delete(uid);
+    });
+    var added = [];
+    var removed = [];
+    next.forEach(function (_r, uid) { if (!map.has(uid)) added.push(uid); });
+    map.forEach(function (_r, uid) { if (!next.has(uid)) removed.push(uid); });
+    map = next;
+    if (notify && (added.length || removed.length)) notifyChange({ added: added, removed: removed });
+  }
+
+  function notifyChange(diff) {
+    var subs = changeSubscribers.slice();
+    for (var i = 0; i < subs.length; i++) {
+      try { subs[i](diff); } catch (e) { console.warn('[FMKBlind.store] onChange 구독자 콜백 예외(격리됨).', e); }
+    }
+  }
+
+  // ---- 쓰기(read-merge-write) -------------------------------------
+  /**
+   * 저장소를 새로 읽고 ops를 얹어 바뀐 청크만 쓴다. 성공하면 disk를 병합 결과로 갱신한다.
+   * 읽기 실패·용량 초과·쓰기 실패는 throw(호출자가 분류·재시도).
+   */
+  async function writeMerged(ops) {
+    var all = await syncGet(null);
+    var parsed = parseDisk(all);
+    lastRead = parsed.entries; // 쓰기가 실패해도 방금 읽은 디스크 상태는 살린다
+    var merged = new Map(parsed.entries);
+    ops.forEach(function (o) {
+      if (o.op === 'add') merged.set(o.uid, o.rec); else merged.delete(o.uid);
+    });
+
+    var built = buildChunks(Array.from(merged.entries()));
+    // 용량 사전 검사는 목록이 커지는 쓰기에만 한다. 추정은 근사치라, 브라우저가 이미 받아 준 목록을
+    // 줄이는 쓰기(해제 등)까지 막으면 한도 근처 사용자가 영영 정리할 수 없다 — 최종 판단은 브라우저에 맡긴다.
+    var diskTotal = quotaLen('bl_meta', { ver: SCHEMA_VER });
+    parsed.chunkIdx.forEach(function (n) { diskTotal += quotaLen('bl_' + n, all['bl_' + n]); });
+    if (built.total > diskTotal) checkQuota(built, parsed.otherBytes);
+
+    var toSet = {};
+    if (!parsed.metaOk) toSet.bl_meta = { ver: SCHEMA_VER };
+    for (var i = 0; i < built.chunks.length; i++) {
+      if (parsed.chunkStr[i] !== JSON.stringify(built.chunks[i])) toSet['bl_' + i] = built.chunks[i];
+    }
+    var stale = parsed.chunkIdx
+      .filter(function (n) { return n >= built.chunks.length; })
+      .map(function (n) { return 'bl_' + n; });
+
+    // 남는 청크는 같은 set 호출에서 빈 배열로 비운다(한 번의 원자적 쓰기 — 다른 탭이 중간 상태에서
+    // 지워진 항목을 보거나, 지우기만 실패해 되살아나는 일이 없다). 키 삭제는 그 뒤 정리용(실패해도 무해).
+    stale.forEach(function (k) {
+      if (parsed.chunkStr[parseInt(k.slice(3), 10)] !== '[]') toSet[k] = [];
+    });
+    if (Object.keys(toSet).length) await syncSet(toSet);
+    disk = merged;
+    if (stale.length) {
+      try { await syncRemove(stale); } catch (e) { console.warn('[FMKBlind.store] 빈 청크 정리 실패(무해).', e); }
+    }
+  }
+
+  /** 현재 pending 전부를 한 번에 저장한다. 실패하면 그 변경들을 되돌리고 reject. */
+  async function persistRun() {
+    lastRead = null;
+    if (!contextAlive()) {
+      var dead = coded('CONTEXT_INVALIDATED', '확장 컨텍스트가 무효합니다(확장 업데이트·재로드 후 남은 페이지).');
+      rollback(snapshotOps());
+      throw dead;
+    }
+    if (!hasStorage()) return; // 저장소 없는 환경(테스트 등) — 메모리 전용
+
+    var ops = snapshotOps();
+    if (!ops.length) return;
+
+    for (var attempt = 0; ; attempt++) {
       try {
-        var arr = JSON.parse(s);
-        if (!Array.isArray(arr)) continue;
-        for (var k = 0; k < arr.length; k++) {
-          var pair = arr[k];
-          if (!pair || pair.length < 2 || !pair[1]) continue;
-          var rec = pair[1];
-          out.set(String(pair[0]), {
-            nick: typeof rec.nick === 'string' ? rec.nick : String(rec.nick || ''),
-            addedAt: Number(rec.addedAt) || 0
-          });
+        await writeMerged(ops);
+        break;
+      } catch (e) {
+        var code = classify(e);
+        if (code === 'WRITE_FAILED' && attempt < RETRY_DELAYS_MS.length) {
+          console.warn('[FMKBlind.store] sync 쓰기 실패 — 재시도 ' + (attempt + 1) + '/' + RETRY_DELAYS_MS.length, e);
+          await sleep(RETRY_DELAYS_MS[attempt]);
+          continue;
         }
-      } catch (e) { /* 손상 스냅샷 청크 무시 */ }
+        if (lastRead) disk = lastRead;
+        rollback(ops);
+        throw (e && e.code === code) ? e : coded(code, String((e && e.message) || e), e);
+      }
     }
-    return out;
+
+    // 성공: 이번에 실은 변경만 pending에서 뺀다(그사이 같은 uid에 새 변경이 오면 seq가 달라 남는다).
+    ops.forEach(function (o) {
+      var p = pending.get(o.uid);
+      if (p && p.seq === o.seq) pending.delete(o.uid);
+    });
+    recompute(true); // 읽기에서 발견한 외부 변경만 diff로 나간다(자기 변경은 이미 map에 반영돼 있음)
+  }
+
+  function snapshotOps() {
+    var ops = [];
+    pending.forEach(function (p, uid) { ops.push({ uid: uid, op: p.op, rec: p.rec, seq: p.seq }); });
+    return ops;
+  }
+
+  /** 실패한 변경을 pending에서 빼고 map을 되돌린다(구독자에 통지 → 화면도 원상 복구). */
+  function rollback(ops) {
+    ops.forEach(function (o) {
+      var p = pending.get(o.uid);
+      if (p && p.seq === o.seq) pending.delete(o.uid);
+    });
+    recompute(true);
   }
 
   /**
-   * chrome.storage.sync를 **단일 권위**로 메모리 맵을 통째로 재구성(clobber)한다. **load() 전용**.
-   * 최초 로드엔 로컬 미영속 상태가 없어 clobber가 안전·정확하다.
-   * (외부 변경 라이브 반영은 applyExternalChange의 reconcile 경로 — map.clear 안 함.)
-   * 부수효과: map.clear() 후 재채움, persistedChunks/metaPersisted를 디스크 상태로 정규화.
-   * **읽기 전용**(절대 sync에 쓰지 않음). 읽기 실패 시 기존 메모리 보존(빈 맵으로 덮지 않음).
-   * @returns {Promise<void>}
+   * 쓰기를 요청한다. 아직 시작하지 않은 실행이 있으면 거기에 함께 실리고, 없으면 새로 큐에 넣는다.
+   * 반환 Promise: resolve = sync에 저장 완료, reject = 저장 실패(코드 포함, 변경은 되돌려짐).
    */
-  async function rebuildFromStorage() {
-    if (!hasStorage()) return;
-    var all;
-    try {
-      all = await syncGet(null);
-    } catch (e) {
-      console.warn('[FMKBlind.store] sync 읽기 실패 — 기존 메모리 상태 유지.', e);
-      return;
-    }
-
-    var parsed = parseSnapshot(all);
-    if (parsed.meta && parsed.meta.ver !== SCHEMA_VER) {
-      // v1은 ver:1만. 불일치 시 마이그레이션 훅 자리(현재는 경고 후 best-effort 복원).
-      console.warn('[FMKBlind.store] 스키마 버전 불일치(저장=' + parsed.meta.ver +
-        ', 기대=' + SCHEMA_VER + '). best-effort 복원 시도.');
-    }
-
-    map.clear();
-    for (var i = 0; i < parsed.entries.length; i++) {
-      map.set(parsed.entries[i][0], parsed.entries[i][1]);
-    }
-    persistedChunks = parsed.snapshot;
-    metaPersisted = parsed.metaOk;
+  function requestPersist() {
+    if (queuedRun) return queuedRun;
+    var run = enqueueSerial(function () {
+      queuedRun = null;
+      return persistRun();
+    });
+    queuedRun = run;
+    return run;
   }
 
-  /** load() 진입점. 최초 1회 sync에서 복원(rebuildFromStorage 공유). 동작은 종전과 동일. */
-  async function doLoad() {
-    if (!hasStorage()) {
-      console.warn('[FMKBlind.store] chrome.storage.sync 미가용 — 빈 목록으로 시작.');
-      return;
+  function addOp(uid, op, rec) {
+    pending.set(uid, { op: op, rec: rec, seq: ++opSeq, run: null });
+  }
+
+  /** uid들의 변경을 실어 갈 쓰기를 요청하고, 각 pending 항목에 그 실행을 기록한다. */
+  function persistOps(uids) {
+    var run = requestPersist();
+    uids.forEach(function (uid) {
+      var p = pending.get(uid);
+      if (p) p.run = run;
+    });
+    return run;
+  }
+
+  /** 이미 미저장 변경이 있는 uid면 그 변경을 실은 실행을, 아니면 null(→ 이미 저장된 상태). */
+  function carryingRun(uid, op) {
+    var p = pending.get(uid);
+    return (p && p.op === op && p.run) ? p.run : null;
+  }
+
+  // ---- 읽기(load·refresh) -----------------------------------------
+  async function readDisk() {
+    try {
+      return parseDisk(await syncGet(null));
+    } catch (e) {
+      await sleep(LOAD_RETRY_MS);
+      try {
+        return parseDisk(await syncGet(null));
+      } catch (e2) {
+        throw coded(classify(e2) === 'CONTEXT_INVALIDATED' ? 'CONTEXT_INVALIDATED' : 'READ_FAILED',
+          '차단 목록을 읽지 못했습니다.', e2);
+      }
     }
-    await rebuildFromStorage();
+  }
+
+  /** 외부 변경 반영: 저장소를 다시 읽어 disk를 갱신하고 diff를 통지한다(쓰기 없음). */
+  function scheduleRefresh() {
+    if (!hasStorage() || queuedRefresh) return;
+    queuedRefresh = enqueueSerial(async function () {
+      queuedRefresh = null;
+      var parsed;
+      try {
+        parsed = parseDisk(await syncGet(null));
+      } catch (e) {
+        console.warn('[FMKBlind.store] 변경 반영용 읽기 실패 — 무시.', e);
+        return;
+      }
+      if (parsed.meta && parsed.meta.ver !== SCHEMA_VER) {
+        console.warn('[FMKBlind.store] 스키마 버전 불일치(저장=' + parsed.meta.ver + '). best-effort.');
+      }
+      disk = parsed.entries;
+      recompute(true);
+    });
+  }
+
+  function installListeners() {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged &&
+          typeof chrome.storage.onChanged.addListener === 'function') {
+        chrome.storage.onChanged.addListener(function (changes, areaName) {
+          if (areaName !== 'sync') return;
+          for (var key in changes) {
+            if (Object.prototype.hasOwnProperty.call(changes, key) && (key === 'bl_meta' || /^bl_\d+$/.test(key))) {
+              scheduleRefresh();
+              return;
+            }
+          }
+        });
+      }
+    } catch (e) { /* onChanged 미지원 — load 시점 동기화만 */ }
+
+    // 알림을 놓쳤을 수 있는 순간(뒤로가기 캐시 복원, 백그라운드 탭 복귀)에 저장소와 다시 맞춘다.
+    try {
+      if (typeof window !== 'undefined' && window.addEventListener) {
+        window.addEventListener('pageshow', function (e) { if (e && e.persisted && loadPromise) scheduleRefresh(); });
+      }
+      if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible' && loadPromise) scheduleRefresh();
+        });
+      }
+    } catch (e) { /* 이벤트 미지원 컨텍스트 */ }
   }
 
   // ---- 공개 API ---------------------------------------------------
   /** @namespace window.FMKBlind.store */
   var store = {
     /**
-     * sync에서 메모리 맵을 복원한다. 앱 시작 시 최초 1회 await.
-     * 멱등(중복 호출 안전). 실패해도 빈 맵으로 동작.
+     * 저장소에서 목록을 읽어 온다. 앱 시작 시 1회 await(멱등).
+     * 읽기는 1회 재시도하고, 그래도 실패하면 reject(code READ_FAILED | CONTEXT_INVALIDATED).
+     * 실패한 load는 캐시하지 않으므로 다시 호출하면 재시도한다.
      * @returns {Promise<void>}
      */
     load: function () {
       if (loadPromise) return loadPromise;
-      loadPromise = doLoad();
+      if (!hasStorage()) {
+        console.warn('[FMKBlind.store] chrome.storage.sync 미가용 — 빈 목록으로 시작.');
+        loadPromise = Promise.resolve();
+        return loadPromise;
+      }
+      var p = enqueueSerial(async function () {
+        var parsed = await readDisk();
+        if (parsed.meta && parsed.meta.ver !== SCHEMA_VER) {
+          console.warn('[FMKBlind.store] 스키마 버전 불일치(저장=' + parsed.meta.ver +
+            ', 기대=' + SCHEMA_VER + '). best-effort 복원 시도.');
+        }
+        disk = parsed.entries;
+        recompute(false);
+      });
+      loadPromise = p.catch(function (e) {
+        loadPromise = null;
+        throw e;
+      });
       return loadPromise;
     },
 
-    /**
-     * 차단 여부 조회(동기).
-     * @param {string} uid
-     * @returns {boolean}
-     */
+    /** @param {string} uid @returns {boolean} */
     isBlocked: function (uid) {
       return map.has(String(uid));
     },
 
     /**
-     * 차단 추가 + 즉시 영속화. 멱등(있으면 nick만 갱신, addedAt 보존).
-     * 메모리는 반환 전 즉시 반영(isBlocked 곧바로 true). 반환 Promise는
-     * **chrome.storage.sync 쓰기가 완료될 때** resolve(계약 C3 갱신).
-     * 단수명 팝업 컨텍스트에서 await 후 닫혀도 쓰기가 클릭 태스크 내에서 디스패치되어 유실되지 않는다.
+     * 차단 추가. 메모리는 반환 전에 바로 바뀐다(isBlocked 즉시 true).
+     * 이미 차단돼 있으면 nick만 갱신(addedAt 유지), 바뀐 게 없으면 쓰지 않는다.
      * @param {string} uid
      * @param {string} [nick]
-     * @returns {Promise<void>}
+     * @returns {Promise<void>} resolve = sync 저장 완료. reject = 저장 실패(err.code), 변경은 되돌려짐.
      */
     block: function (uid, nick) {
       uid = String(uid);
       var existing = map.get(uid);
       if (existing) {
-        if (typeof nick === 'string' && nick !== existing.nick) existing.nick = nick;
+        if (typeof nick !== 'string' || nick === existing.nick) {
+          // 바뀐 게 없으면 쓰지 않는다. 아직 저장 중인 차단이면 그 결과(실패 시 reject)를 따른다.
+          return carryingRun(uid, 'add') || Promise.resolve();
+        }
+        addOp(uid, 'add', { nick: nick, addedAt: existing.addedAt });
       } else {
-        map.set(uid, { nick: typeof nick === 'string' ? nick : '', addedAt: nowMs() });
+        addOp(uid, 'add', { nick: typeof nick === 'string' ? nick : '', addedAt: nowMs() });
       }
-      // 디바운스(schedulePersist) 대신 즉시·직렬 영속화. 보류 타이머가 있으면 함께 흡수.
-      return flushPending();
+      recompute(false);
+      return persistOps([uid]);
     },
 
     /**
-     * 차단 해제 + 즉시 영속화. 없으면 no-op(Promise.resolve()). 메모리는 반환 전 즉시 반영.
-     * 반환 Promise는 **chrome.storage.sync 쓰기가 완료될 때** resolve(계약 C3 갱신).
-     * 팝업에서 await 후 닫혀도 쓰기가 유실되지 않는다(영속화 누락 버그 수정).
+     * 차단 해제. 메모리는 반환 전에 바로 바뀐다. 없는 uid는 no-op.
      * @param {string} uid
-     * @returns {Promise<void>}
+     * @returns {Promise<void>} resolve = sync 저장 완료. reject = 저장 실패(err.code), 변경은 되돌려짐.
      */
     unblock: function (uid) {
       uid = String(uid);
-      if (map.delete(uid)) return flushPending();
-      return Promise.resolve(); // 삭제 대상 없음 → no-op
+      if (!map.has(uid)) return carryingRun(uid, 'del') || Promise.resolve();
+      addOp(uid, 'del');
+      recompute(false);
+      return persistOps([uid]);
     },
 
-    /**
-     * 차단 목록 스냅샷(복사본). addedAt 내림차순(최신 먼저).
-     * @returns {Array<{uid: string, nick: string, addedAt: number}>}
-     */
+    /** 차단 목록 스냅샷(복사본). addedAt 내림차순. @returns {Array<{uid:string,nick:string,addedAt:number}>} */
     list: function () {
       var out = [];
       map.forEach(function (rec, uid) {
@@ -563,27 +549,14 @@
       return out;
     },
 
-    /**
-     * 차단 인원수(동기).
-     * @returns {number}
-     */
+    /** @returns {number} */
     count: function () {
       return map.size;
     },
 
     /**
-     * (선택·가산적 7번째 API) 외부 sync 변경(다른 탭/팝업/기기) 라이브 구독.
-     * chrome.storage.onChanged가 발생하면 메모리 맵을 스토리지 권위로 자동 정합한 뒤,
-     * 직전 키셋 대비 diff를 콜백에 통지한다. **load() 호출 여부와 무관하게 구독 가능**(권장: load 후).
-     *
-     * - cb 시그니처: ({ added: string[], removed: string[] }) => void  (uid 문자열 배열)
-     *   · added: 외부에서 새로 차단된 uid들 · removed: 외부에서 해제된 uid들
-     *   · 값만 바뀌고(nick 변경 등) 키셋이 동일하면 added/removed 모두 빈 배열 → 콜백 호출 생략.
-     * - 자기-쓰기 에코(자신의 persist가 유발한 onChanged)는 diff가 비어 no-op.
-     * - 반환값: **unsubscribe 함수**. 호출 시 해당 콜백 등록 해제(멱등).
-     * - 다중 구독 지원. 한 콜백의 예외는 격리되어 다른 구독자/스토어에 영향 없음.
-     * - onChanged 미지원 컨텍스트에서는 콜백이 호출되지 않을 뿐, 등록/해제는 정상 동작.
-     *
+     * 목록 변경 구독. 다른 탭/팝업/기기의 변경, 그리고 저장 실패로 되돌린 변경을
+     * ({ added: string[], removed: string[] }) 키 diff로 알린다. 자기 변경이 성공한 경우엔 알리지 않는다.
      * @param {function({added: string[], removed: string[]}): void} cb
      * @returns {function(): void} unsubscribe
      */
@@ -597,78 +570,62 @@
     },
 
     /**
-     * (선택·가산적 8번째 API — 2026-07-08) 차단 목록 배치 가져오기(import).
-     * 내보낸 JSON(팝업이 list() 결과를 직렬화한 것)을 대량으로 메모리에 **일괄 반영한 뒤 1회 직렬 flush**한다.
-     * 항목별 block() 호출을 피해 sync 레이트리밋(분당 120/시간당 1,800) 압박을 줄이는 것이 목적(TODO Q7).
-     *
-     * 머지 시맨틱(C10):
-     *   - 새 uid          → 추가. 가져온 nick·addedAt 사용(addedAt 없거나 비정상이면 현재 시각).
-     *   - 이미 있는 uid   → **로컬 유지·스킵**(skipped++). nick/addedAt를 덮지 않는다.
-     *   - 비정상 항목      → invalid++ (throw 없이 항목 단위로 건너뜀). 판정: 객체 아님 / uid 결측 /
-     *                        uid가 숫자열(^\d+$) 아님. uid는 C1대로 String(uid)로 정규화 후 검증.
-     *
-     * 영속화: 메모리 반영 후 **flushPending() 1회**(기존 persist 경로 재사용 — 별도 쓰기 경로 없음).
-     *   반환 Promise resolve = **chrome.storage.sync 쓰기 완료**(C3 준용). added가 0이면 쓰기 없이 즉시 resolve(멱등).
-     *
-     * C9 reconcile 상호작용: importMany로 추가된 미영속 항목은 로컬 block과 동일하게 "prevMap(persistedChunks)
-     *   에도 디스크에도 없는 로컬 미영속 항목"이므로, flush 대기 중 외부 onChanged가 끼어들어도
-     *   applyExternalChange의 reconcile가 손대지 않아 보존된다(map은 동기적으로 이미 갱신됨 → block과 동형).
-     *
-     * 용량: items가 100KB 한도를 넘길 수 있다. 여기서 사전 추정 초과 시 콘솔 경고(차단하지 않음 — best-effort),
-     *   실제 쓰기 때 persistOnce의 QUOTA_WARN 경로가 다시 검증한다.
-     *
+     * 배치 가져오기. 새 uid는 추가, 이미 있는 uid는 건너뛰고(skipped), 비정상 항목은 invalid로 센다.
+     * 닉네임은 NICK_MAX자로 자른다. 메모리를 건드리기 전에 가져온 뒤의 예상 용량을 재서
+     * 한도를 넘으면 아무것도 바꾸지 않고 reject(code QUOTA, err.fit = 대략 더 넣을 수 있는 인원).
      * @param {Array<{uid: string|number, nick?: string, addedAt?: number}>} items
-     * @returns {Promise<{added: number, skipped: number, invalid: number}>}
+     * @returns {Promise<{added: number, skipped: number, invalid: number}>} resolve = sync 저장 완료.
      */
     importMany: function (items) {
       var result = { added: 0, skipped: 0, invalid: 0 };
-
       if (!Array.isArray(items)) {
-        // items 자체가 배열이 아니면 반영할 항목이 없다 → no-op(멱등). throw 금지.
         console.warn('[FMKBlind.store] importMany: items가 배열이 아닙니다 — 무시.');
         return Promise.resolve(result);
       }
 
+      var adds = [];
+      var seen = new Set();
       for (var i = 0; i < items.length; i++) {
         var it = items[i];
-        // 항목이 객체가 아니거나 uid가 결측이면 비정상.
         if (!it || typeof it !== 'object') { result.invalid++; continue; }
-        var rawUid = it.uid;
-        if (rawUid === undefined || rawUid === null) { result.invalid++; continue; }
-        var uid = String(rawUid);            // C1: 문자열 정규화
-        if (!/^\d+$/.test(uid)) { result.invalid++; continue; } // 숫자열만 유효(member_{UID} 규칙)
-        if (map.has(uid)) { result.skipped++; continue; }       // 이미 있으면 로컬 유지·스킵
-
-        var nick = (typeof it.nick === 'string') ? it.nick : '';
+        if (it.uid === undefined || it.uid === null) { result.invalid++; continue; }
+        var uid = String(it.uid);
+        if (!/^\d+$/.test(uid)) { result.invalid++; continue; }
+        if (map.has(uid) || seen.has(uid)) { result.skipped++; continue; }
+        seen.add(uid);
+        var nick = (typeof it.nick === 'string') ? it.nick.slice(0, NICK_MAX) : '';
         var addedAt = Number(it.addedAt);
-        if (!isFinite(addedAt) || addedAt <= 0) addedAt = nowMs(); // 없거나 비정상 → 현재 시각
-        map.set(uid, { nick: nick, addedAt: addedAt });
-        result.added++;
+        if (!isFinite(addedAt) || addedAt <= 0) addedAt = nowMs();
+        adds.push([uid, { nick: nick, addedAt: addedAt }]);
       }
+      result.added = adds.length;
+      if (!adds.length) return Promise.resolve(result);
 
-      if (result.added === 0) {
-        // 추가된 항목이 없으면 쓰기 불필요 → 즉시 resolve(멱등). 전량 중복/비정상/빈 배열 포함.
-        return Promise.resolve(result);
-      }
-
-      // 사전 용량 추정(best-effort 경고 — 차단하지 않음). 근사치이므로 조기 경고가 목적이며,
-      // 실제 청킹·쓰기 시 persistOnce가 QUOTA_WARN로 정밀 재확인한다.
+      // 메모리를 바꾸기 전에 용량부터 확인(부분 가져오기 없음).
       try {
-        var estBytes = byteLen(JSON.stringify(Array.from(map.entries())));
-        if (estBytes > TOTAL_BUDGET) {
-          console.warn('[FMKBlind.store] importMany: 가져오기 후 예상 용량(' + estBytes +
-            'B)이 sync 한도(' + TOTAL_BUDGET + 'B)를 초과할 수 있습니다 — 일부 항목이 저장되지 않을 수 있습니다(best-effort).');
+        var current = Array.from(map.entries());
+        checkQuota(buildChunks(current.concat(adds)));
+      } catch (e) {
+        if (e && e.code === 'QUOTA') {
+          try {
+            var used = buildChunks(Array.from(map.entries())).total;
+            var per = 0;
+            adds.forEach(function (a) { per += valueLen([a[0], canonRec(a[1])]) + 1; });
+            per /= adds.length;
+            // 청크 경계·키 바이트 몫을 감안해 5% 낮춰 잡는다(안내한 인원을 넣었는데 또 실패하지 않게).
+            e.fit = Math.max(0, Math.floor((QUOTA_BYTES - used) / Math.max(per, 1) * 0.95));
+          } catch (e2) { e.fit = 0; }
         }
-      } catch (e) { /* 추정 실패는 무시(쓰기는 그대로 진행) */ }
+        return Promise.reject(e);
+      }
 
-      // 메모리는 위에서 동기 반영 완료 → flushPending()으로 변경분을 1회 직렬 persist.
-      // 반환 Promise resolve = sync 쓰기 완료(C3 준용). 항목별 block()처럼 여러 번 쓰지 않는다.
-      return flushPending().then(function () { return result; });
+      adds.forEach(function (a) { addOp(a[0], 'add', a[1]); });
+      recompute(false);
+      return persistOps(adds.map(function (a) { return a[0]; })).then(function () { return result; });
     }
   };
 
-  // 라이브 동기 리스너 등록(존재 가드 — 미지원 시 스킵). content/popup 양 컨텍스트에서 1회.
-  installOnChangedListener();
+  installListeners();
 
   root.FMKBlind.store = store;
 })();

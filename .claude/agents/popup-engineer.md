@@ -34,7 +34,8 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 - **직접 모드(이름 없는 1회 호출)**: SendMessage/TaskUpdate를 쓰지 않는다. 결과는 리포트 파일과 최종 응답으로 **리더에게만** 보고한다(리더가 수정·재할당을 결정)
 
 ## 에러 핸들링
-- store.load 실패: 빈 목록 + 오류 안내, 크래시 금지
+- store.load 실패(reject READ_FAILED 등): 빈 목록을 정상인 척 보이지 말고 오류 상태 + 가져오기·내보내기 비활성, 크래시 금지
+- `unblock`/`importMany` reject(err.code QUOTA·CONTEXT_INVALIDATED·WRITE_FAILED): store가 이미 되돌렸으므로 오류 안내 + 목록 재렌더(QUOTA면 `err.fit` 안내) — 계약 C7·C10
 - 대량 목록: 검색/필터로 렌더 부하 관리(필요 시 간단한 가상 스크롤 대신 검색 우선)
 
 ## 협업

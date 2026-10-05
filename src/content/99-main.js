@@ -7,6 +7,14 @@
 
   const NS = window.FMKBlind || {};
 
+  // store 쓰기 실패(reject err.code) → 사용자 안내 문구.
+  function saveFailMessage(e) {
+    const code = e && e.code;
+    if (code === 'CONTEXT_INVALIDATED') return '확장 프로그램이 업데이트되어 저장하지 못했습니다 — 페이지를 새로고침한 뒤 다시 시도하세요';
+    if (code === 'QUOTA') return '저장 공간이 가득 차 저장하지 못했습니다 — 팝업에서 목록을 정리해 주세요';
+    return '저장하지 못했습니다 — 잠시 후 다시 시도하세요';
+  }
+
   async function main() {
     const store = NS.store;
 
@@ -17,7 +25,7 @@
     }
 
     try {
-      await store.load(); // 최초 1회. 계약상 실패해도 내부는 빈 맵으로 안전 동작.
+      await store.load(); // 최초 1회. 읽기는 store가 1회 재시도하고, 그래도 실패하면 reject(READ_FAILED 등).
     } catch (e) {
       console.warn('[FMK-Blind] store.load 실패 — 차단 없이 정상 노출', e);
       return;
@@ -54,9 +62,16 @@
     NS.contextmenu.install({
       isBlocked: (uid) => store.isBlocked(uid),
 
-      // 계약 C3: block resolve 직후 메모리 반영 → 그 다음 숨김 처리.
+      // 계약 C3: resolve = sync 저장 완료 → 그 다음 숨김 처리. reject면 store가 변경을 되돌렸으므로
+      // 숨기지 않고 실패 안내만 한다(저장 실패를 성공으로 보이지 않게 — 이슈 #13).
       async onBlock(uid, nick) {
-        await store.block(uid, nick);
+        try {
+          await store.block(uid, nick);
+        } catch (e) {
+          console.warn('[FMK-Blind] 차단 저장 실패', e);
+          NS.toast.show(saveFailMessage(e));
+          return;
+        }
         nickIndex = null;
         NS.hide.hideByUid(uid); // 현재 탭 즉시 숨김 반영
         NS.hide.scanNickRows(document, uidForNick);
@@ -64,7 +79,13 @@
       },
 
       async onUnblock(uid, nick) {
-        await store.unblock(uid);
+        try {
+          await store.unblock(uid);
+        } catch (e) {
+          console.warn('[FMK-Blind] 차단 해제 저장 실패', e);
+          NS.toast.show(saveFailMessage(e));
+          return;
+        }
         nickIndex = null;
         NS.hide.unhideByUid(uid); // 현재 탭 즉시 복구
         // 같은 닉네임의 다른 차단 uid 가 남아 있으면 방금 복구된 목록 행을 그 uid 로 다시 숨긴다.
@@ -74,7 +95,7 @@
     });
 
     // 4) 라이브 동기(C9) — 팝업/다른 탭/다른 기기의 변경을 새로고침 없이 현재 탭에 반영.
-    //    store.onChange는 외부 sync 변경 시에만 diff를 통지한다(자기-쓰기 에코는 빈 diff → 미호출).
+    //    store.onChange는 외부 sync 변경과, 저장 실패로 되돌린 변경을 diff로 통지한다(자기 변경이 성공하면 미호출).
     //    removed → 복구(닉네임 폴백으로 숨긴 행도 data-fmkb-uid 를 남기므로 unhideByUid 로 함께 복구),
     //    added → 현재 DOM에서 해당 작성자 컨테이너 숨김, 마지막에 UID 없는 목록 닉네임 폴백 재스캔. 30-hide 함수 재사용.
     //    범위: 이미 로드된 DOM을 즉시 반영. 이후 새로 삽입되는 DOM은 (2)의 MutationObserver 가
