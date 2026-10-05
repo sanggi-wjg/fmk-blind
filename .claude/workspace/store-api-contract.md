@@ -176,6 +176,9 @@ try {
   // e.code: 'CONTEXT_INVALIDATED'(새로고침 안내) | 'QUOTA'(목록 정리 안내) | 'SCHEMA_NEWER'(확장 업데이트 안내) | 'WRITE_FAILED'(잠시 후 재시도)
   // store가 이미 되돌렸으므로 숨기지 않고 실패 토스트만. unblock도 동일.
 }
+// 토스트의 '실행 취소'(2026-10-05 — 기존 API 재사용, 계약 무변경): 차단 취소 = unblock(uid).
+// 해제 취소 = 해제 전에 list()에서 잡아 둔 항목을 importMany([항목])로 다시 넣는다 — importMany는 항목의 addedAt을
+// 그대로 쓰므로 원래 차단 날짜가 유지된다(block은 새 uid의 addedAt을 지금으로 정함). resolve 뒤에 숨김.
 // UID 없는 목록(모바일 목록·PC 위젯형 목록) 닉네임 폴백(2026-10-05, 이슈 #8·#16 — 기존 API 재사용, 계약 무변경):
 // list()의 nick으로 '정규화 닉 → uid' 색인을 만들고 block/unblock/onChange 때 무효화·재구성.
 FMKBlind.store.list().forEach(function (it) { /* nickIndex.set(normalizeNick(it.nick), it.uid) */ });
@@ -197,6 +200,8 @@ await FMKBlind.store.load();              // 팝업 열릴 때 1회 — reject�
 const items = FMKBlind.store.list();      // [{uid,nick,addedAt}] desc → 렌더
 const n = FMKBlind.store.count();         // 인원수 표시
 await FMKBlind.store.unblock(uid);        // 해제 버튼 → resolve = sync 영속 완료 / reject = 실패(되돌려짐) → 오류 표시 + 재렌더
+// 해제 되돌리기(2026-10-05 — 계약 무변경): 해제 전 항목 {uid,nick,addedAt}을 importMany([항목])로 다시 넣는다.
+// addedAt이 유지돼 원래 목록 자리로 돌아간다. 이미 다른 곳에서 다시 차단됐으면 skipped(무해).
 
 // 라이브 동기(선택·저비용): 팝업이 열린 채 탭에서 우클릭 차단/해제 시 목록/카운트 자동 재렌더.
 FMKBlind.store.onChange(function () { render(FMKBlind.store.list(), FMKBlind.store.count()); });

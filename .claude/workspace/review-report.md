@@ -1,355 +1,138 @@
-# 코드 리뷰 보고서 — FMK-Blind
+# 코드 리뷰 보고서: FMK-Blind
 
-> **후속 반영·재검증 기록(2026-10-05, 커밋 전):** 1차 리뷰 R1~R4·N2~N6과 QA M1(꽉 찬 배치에서 선형 탐색이 마지막 청크로 몰림)·m1~m5 반영 — 새 차단은 '자리가 남은 청크 중 uid 해시'(늘 4곳 이상), 디스크에 없던 빈 칸은 쓰지 않음, 중복 uid는 뒤쪽 유지, 가져오기는 늘 '늘리는 변경', 메모리 전용 모드 유실 수정, 재시도 실패 시 오류 코드 분리, persistRun 예외 가드. **2차 리뷰 OK-TO-COMMIT**(반복 재채움 없음·해시 분포 이상적·용량 v0.8.1과 동일) → M1 손상 중간 청크를 `[]`로 덮기·N1 추가 후보 칸 크기 검사 반영. 측정(최악 조건 모의): 새 차단 동시 약 1/8 유실(v0.8.1 80/80), 해제+차단 8~14/80. QA 모의 54/54·12/12·29/29·16/16·4/4, 호환 82/82(v0.6.1~v0.8.1), 용량 5개 닉 패턴 모두 v0.8.1과 같은 인원, 실 Firefox 156 2/2·16/16·29/30(F7은 옛 배치 가정의 테스트 기대값).
+## 2026-10-05 UI/UX 1차 묶음 최종 재리뷰(2차 수정 루프): 브랜치 `feat/undo-and-error-feedback`(main f8bfba5 기준, 미커밋)
 
-## 2026-10-05 저장 계층 후속 리뷰 — 브랜치 `fix/store-followups`(main 8341647 기준, 미커밋) · 이슈 #25·#26·#27·#28
+- 담당: extension-reviewer(직접 모드, 재리뷰). 소스는 고치지 않았다. 이번 실행에서 병렬로 생성 중인 `qa-report.md`는 근거로 쓰지 않았다.
+- 대상: `git diff main` 전체. 직전 리뷰 뒤 반영된 수정을 중점으로 봤다.
+  - R5: 토스트 낭독을 sr-only `.fmkb-toast-live`(role=status)로 옮기고, 보이는 문구는 aria-hidden 처리
+  - N9: `lastActedUid`
+  - N10과 QA MINOR-2R: 새 `.fmkb-toast-absorb` 클래스, pointer-events 규칙 분리
+  - QA MINOR-8: `returnFocusTo`로 포커스 되돌림
+  - 문서(PLAN·README·TODO)
+- 검증 산출물(스크래치패드 `…/scratchpad/`)
+  - `rv-ux3/toast_test3.js`(신규): **실제 headless Chrome 154 + CDP**. 실제 마우스·키 입력으로 히트 테스트, 포커스, AX 트리를 확인했다. 결과는 **33/35**이고, 실패 2건이 아래 minor R6이다. 테스트 페이지는 현재 `content.css`로 다시 만들었다(`build.js`).
+  - `rv-ux3/edge_test.js`(신규): 버튼의 가장자리를 두 번 클릭하는 측정이다. 현재 CSS와 R6 수정안 CSS(`build_patched.js`)를 비교한다.
+  - `rv-ux3/toast_test_prev.js`: 직전 라운드 스위트(`rv-ux2/toast_test.js`)를 현재 코드로 다시 돌렸다. **21/21**이다.
+  - `rv-ux/popup_test.js` **23/23**, `rv-ux/popup_test2.js` 9/10, `rv-ux/q6b.js` N9 확인. `popup_test2`의 1건은 직전 리뷰에서 밝힌 테스트 기대 오류(Q2 중간 상태)이고, 최종 상태는 PASS다.
+  - `rv-ux/content_test.js` **24/24**. `node --check`로 content 9파일과 popup.js를 확인했고 모두 통과했다.
 
-- 담당: extension-reviewer(직접 모드, 독립 리뷰. 병렬 QA 결과는 근거로 쓰지 않음)
-- 대상: `src/content/10-store.js`(`parseDisk` layout/문자열 청크, `hash32`, `planChunks`, `writeMerged`, `tryWrite`/`grows`/`persistRun` 분할 재시도, `settle`/`rollback`/`addOp`/`pendingResult` 변경별 waiter), `src/content/99-main.js`(await 뒤 `isBlocked` 재확인), 계약 C3·C11, sync-sharded-storage 스킬, 헤더, CLAUDE.md, manifest 0.8.2
-- 검증(모두 `scratchpad/rv-d/`): 모의 chrome.storage(키 정렬 읽기·Chrome 방식 용량·항목/전체/키 수 한도·비동기 onChanged·장애 주입) 위에서 t1(기본·1,500명), t2(기기 간 동시 쓰기 키 단위 LWW 병합), t3/t4(waiter·#27 분할·컨텍스트 무효·메모리 전용·미처리 reject), t5(문자열 청크·예전 초과 항목·bl_600·손상·중복·bl_9→bl_10·무작위 퍼징 300회). `node --check` 2파일·manifest JSON 통과.
+> **판정: MERGE 가능 (blocker 0 / major 0 / minor 1 / nit 1).**
+> - 직전 리뷰의 minor R5, nit N9·N10, QA MINOR-8은 **해소됐다**. QA MINOR-2R은 버튼 가운데를 누르는 경우 해소됐다.
+> - 새 minor R6이 하나 남았다. 흡수 영역이 곧이어 뜨는 결과 토스트의 크기를 따라 줄어서, 버튼의 **오른쪽 끝**을 더블클릭하면 두 번째 클릭이 여전히 페이지로 간다. CSS 5줄 수정안을 실측으로 검증해 뒀다. 이번 PR에서 고치기를 권하지만, 고치지 않아도 데이터나 차단 상태가 잘못되지는 않는다.
+> - 새 코드가 만든 데이터·동작 정확성 회귀는 없다. 직전 라운드 스위트(토스트 21, 팝업 23, content 24)도 모두 그대로 통과한다.
 
-> **판정: OK-TO-COMMIT. blocker 0 / major 0 / minor 4 / nit 6.** `planChunks` 인덱스·바이트 계산은 정확했다(퍼징 300회에서 중복·예산 초과·내용 불일치·`lens` 합과 실제 크기 차이 0건, bl_10 추가 시에도 예산 준수·`total` 정확 일치). waiter는 컨텍스트 무효·대체·분할·가져오기 경로 모두 끝까지 settle되고 미처리 reject 0건. 1,500명에서 해제·차단 모두 **청크 1개만** 쓰고 `planChunks` 1.2ms. 아래 minor 중 R1(메모리 전용 회귀)과 R2(빈 청크 선생성)는 한두 줄 수정이라 같은 커밋에 넣기를 권한다.
+### 이전 지적 해소 여부
 
-### [minor] R1 메모리 전용 모드에서 저장 후 차단이 사라짐(회귀)  (차원: 정확성)
-- 위치: `src/content/10-store.js:516`
-- 증거: `if (!hasStorage()) { settle(ops); recompute(false); return; }` — `settle`이 pending을 지우는데 `disk`엔 반영하지 않아 `recompute`가 변경을 지운다. 실측: `await block('5')` resolve 후 `isBlocked('5') === false`. v0.8.1은 pending을 남겨 유지됐다.
-- 영향: 실제 확장(Chrome·Firefox 모두 `storage` 권한)에서는 도달하지 않는다. 저장소 없는 테스트 환경·`load()` 문서의 "빈 목록으로 시작" 동작이 깨진다.
-- 수정안: `ops.forEach(function (o) { if (o.op === 'add') disk.set(o.uid, o.rec); else disk.delete(o.uid); });`를 `settle` 앞에 추가(패치본에서 통과 확인).
+| ID | 내용 | 결과 | 근거 |
+|---|---|---|---|
+| R5 | 숨김 상태의 `visibility:hidden` 때문에 다시 뜰 때 라이브 영역이 '새로 생긴' 것으로 잡혀 낭독되지 않을 수 있음 | **해소** | AX 트리에서 숨김 중에도 `status` 노드가 남는다(ignored false). 다시 show하면 15ms 시점에 비어 있다가 135ms 시점에 채워져, 진짜 내용 변경으로 잡힌다. 연달아 show하면 마지막 문구만 남는다(`liveTimer` 정리). 보이는 동안 문구 텍스트 노드는 1개뿐이다(msg aria-hidden으로 중복 없음). 1px clip 영역이라 히트 테스트에 걸리지 않고 토스트 크기도 바꾸지 않는다(데스크톱·터치 높이 38.19/45px 유지) |
+| N9 | 두 줄 작업이 겹치면 먼저 끝난 줄에 포커스가 남음 | **해소** | `q6b.js`: A가 끝날 때는 body에 머물고, B가 끝나면 B의 되돌리기 버튼으로 간다. P6(사용자가 C로 옮긴 포커스 유지)은 그대로다. `beginRowWork`가 거절되면(이미 busy) `lastActedUid`가 바뀌지 않는 것도 맞다 |
+| N10 | 실행 취소 토스트가 자동으로 사라질 때도 0.5초 동안 클릭을 흡수함 | **해소** | 자동 숨김 60ms 뒤의 클릭이 페이지에 닿는다. 자동 숨김 경로에서는 absorb 클래스가 붙지 않는다(`toast_test3` C, `toast_test_prev` T4 info: false) |
+| QA MINOR-2R | 실행 취소 뒤 결과 토스트가 has-action을 떼어 흡수가 끊기고, 두 번째 클릭이 페이지로 감 | **대부분 해소**(잔여 R6) | 버튼 가운데 기준으로 결과 토스트 지연 {0,30,150,400}ms × 두 번째 클릭 간격 {60,200,420}ms × 문구 2종 = 24조합 모두 흡수됐다. 데스크톱과 터치에서 모두 0/24이고, 실행 취소는 정확히 1회 실행된다. 흡수가 끝난 650ms 시점에는 결과 토스트를 눌러도 클릭이 페이지에 닿는다. 단 버튼 오른쪽 끝은 R6 참고 |
+| QA MINOR-8 | 키보드로 실행 취소를 누르면 포커스가 body로 감 | **해소** | `toast_test3` E: y에서 Tab으로 들어와 Enter를 누르면 1회 실행되고 포커스가 y로 돌아온다. `scrollY` 1500도 유지된다(preventScroll). textarea에서 들어와 Enter나 Space를 눌러도 포커스가 textarea로 돌아오고, **값에 개행·공백이 새지 않는다** |
+| N2·N7·MINOR-6·MINOR-7 | 의도적 미반영 | 미반영 유지(타당) | 직전 리뷰 판단과 같다. PR의 알려진 한계에 적는다 |
+| R1~R4, N1·N3~N6·N8 | 직전 라운드에서 해소 | 회귀 없음 | 직전 스위트를 다시 돌린 결과 그대로 통과한다(토스트 21/21, 팝업 23/23, content 24/24) |
 
-### [minor] R2 디스크에 없는 빈 청크까지 `[]`로 만들어 처음 몇 번의 동시 쓰기가 다시 겹침  (차원: 견고성 #26)
-- 위치: `planChunks` `place()` `src/content/10-store.js:352`(해시 위치까지 `[]` 채움) + `writeMerged` `:460-462`
-- 증거: 빈 저장소에서 차단 1명 → `set(bl_0..bl_7, bl_meta)`(빈 청크 7개 생성). 두 기기가 같은 기본 상태를 읽고 각각 새 차단(키 단위 LWW 병합 모의, 80회): **빈 저장소 41/80 유실**, 청크가 이미 있는 목록 10/80(해시 충돌 1/8). v0.8.1은 모든 크기에서 80/80. 한쪽의 `[]`가 다른 쪽이 넣은 청크를 덮는다.
-- 수정안: `writeMerged` 루프에서 `if (!built.chunks[i].length && parsed.chunkIdx.indexOf(i) < 0) continue;` — 디스크에 없는 빈 청크는 만들지 않는다(키 틈은 v0.7.1·v0.8.1·현재 판독기 모두 정규식으로 키를 모으므로 무해, stale 계산도 그대로). 패치본: 빈 저장소 41/80 → 10/80.
+### 중점 점검(리더 요청) 결과
 
-### [minor] R3 문서의 "모의 80회 중 유실 0"이 실제 동시성 기준과 다름  (차원: 유지보수성/문서)
-- 위치: `.claude/workspace/store-api-contract.md` C11 ①, `CLAUDE.md` 변경 이력 마지막 행
-- 증거: 두 기기가 **같은 기본 상태를 읽은 뒤** 각각 쓰는 진짜 동시 쓰기로 재면 새 차단+새 차단 ≈ 1/8(10/80), 해제+차단 8~14/80, 빈 저장소 41/80(R2 수정 후 10/80). 0/80이 나오려면 한쪽 읽기가 다른 쪽 쓰기 뒤였어야 한다(확률상 (7/8)^80 ≈ 2e-5).
-- 수정안: "같은 청크에 들어갈 확률 ≈ 1/max(8, 청크 수)로 감소(모의: 옛 배치 80/80 → 10/80)"처럼 확률로 적는다.
+- **absorb 타이머와 연속 토스트**
+  - 실행 취소 클릭으로만 absorb가 켜진다(키보드 Enter·Space 포함, 무해). 500ms 뒤 꺼진다. 다시 누르면 타이머가 재시작된다.
+  - 곧이어 오는 결과 토스트, 오류 토스트, 새 실행 취소 토스트 모두 absorb 동안만 클릭을 받는다. 새 실행 취소 토스트는 has-action 규칙으로 원래 클릭을 받는다.
+  - 흡수가 끝나면 버튼 없는 토스트는 다시 통과시킨다. absorb 시간 500ms와 visibility 지연 0.5s가 맞물려, 숨긴 뒤 흡수가 끝나면 곧 클릭 대상에서도 빠진다.
+  - 결함은 R6(흡수 영역의 크기) 하나다.
+- **재로드 전 잔재**
+  - `ensureEl`은 연결이 끊긴 `el`을 다시 만들 때 같은 id의 옛 토스트를 지운다.
+  - `show-absorb-has-action` 클래스를 가진 가짜 옛 토스트를 넣고 확인했다. show 뒤 토스트는 하나만 남고 absorb 클래스도 없다(J).
+  - 옛 `absorbTimer`·`liveTimer`는 실행되는 시점의 모듈 변수(새 `el`·`liveEl`)를 건드린다. 클래스 제거와 같은 문구 채우기뿐이라 무해하다.
+  - 지우기는 '첫 show 때'에만 일어난다. 이 점은 아래 [INFO] 참고.
+- **live 영역과 aria-hidden**
+  - 낭독 중복이 없고, 숨김 중에도 영역이 유지된다.
+  - 실행 취소 버튼은 보이는 동안만 노출되고 숨기면 빠진다(AX `btn` 1→0).
+  - 다만 보이는 문구가 aria-hidden이라 버튼이 문맥 없이 "실행 취소"로만 읽힌다. nit N11 참고.
+- **returnFocusTo의 오래된 참조** 경우별 결과. 오래된 참조로 엉뚱한 곳에 포커스가 간 경우는 없었다.
+  - `releaseFocus`는 포커스가 토스트 안에 있을 때만 불린다. 포커스가 토스트에 들어올 때마다 focusin이 `returnFocusTo`를 새 값으로 덮는다. 밖에서 들어오면 relatedTarget이고, body나 창 밖에서 들어오면 null이다.
+  - F1: Tab으로 들어왔다가 페이지를 클릭해 body로 나가고, 자동 숨김 뒤 새 토스트를 마우스로 클릭했다. Chrome이 버튼에 포커스를 주며 focusin(relatedTarget null)이 오래된 y를 null로 덮으므로, 포커스는 **body**로 간다(y 아님).
+  - F2: 마우스 클릭이 버튼에 포커스를 주지 않는 Firefox·Safari 방식을 mousedown preventDefault로 흉내 냈다. 포커스가 토스트에 없어 `releaseFocus`가 불리지 않고 **body**에 남는다.
+  - F3: Tab으로 들어와 x를 클릭하고 자동 숨김이 되면, 포커스는 **x**에 그대로 있다.
+  - F5: Shift+Tab으로 y에 나간 뒤 자동 숨김이 되면, 포커스는 **y**에 그대로 있다.
+  - F4: x에 입력하던 중 마우스로 실행 취소를 누르면 포커스가 **x**로 돌아온다(원래 있던 곳이므로 바람직).
+  - G: 되돌아갈 요소가 제거됐거나, `display:none`이거나, `disabled`이면 `focus()`가 실패한다. 이때 blur로 넘어가 **body**로 가고, 토스트 안에 갇히지 않는다.
+- **주석·문서 정합**
+  - `50-toast.js` 상수와 함수 주석, `content.css` 주석(visibility 지연, has-action, absorb, live)은 동작과 맞는다.
+  - PLAN Q9, README, TODO의 "마우스를 올리거나 키보드로 포커스하면 멈춤"도 맞는다.
+  - absorb 주석의 "결과 토스트에도 유지된다"는 클래스 기준으로는 사실이다. 다만 흡수 영역은 결과 토스트 크기로 줄어든다(R6). 수정 시 주석 한 줄을 보탠다.
 
-### [minor] R4 #27 분할 재시도가 실패하면 늘리는 변경도 그 오류 코드로 거절  (차원: 정확성)
-- 위치: `src/content/10-store.js:526-537`
-- 증거: 한도 근처에서 해제+새 차단 → 1차 QUOTA → 해제만 재시도가 일시 오류 4회 → `res = res2` → `rollback(ops, res2.err)`. 실측 결과: 새 차단이 `WRITE_FAILED`로 거절(실제 원인은 QUOTA). 사용자는 "용량 초과"가 아니라 "다시 시도" 안내를 본다.
-- 수정안: `res2` 실패 시 `rollback(grow, res.err); rollback(shrink, res2.err);`(disk = lastRead 먼저). 둘 다 `recompute(true)`를 부르므로 한 번만 부르도록 정리해도 된다.
+### [minor] R6 클릭 흡수 영역이 '결과 토스트'의 크기를 따라 줄어, 실행 취소 버튼 오른쪽 끝을 더블클릭하면 두 번째 클릭이 페이지로 감  (차원: 정확성·UX)
+- 위치: `src/content.css:85-87`(`#fmkb-toast.fmkb-toast-absorb { pointer-events: auto; }`), `src/content/50-toast.js:145-153`(show가 버튼을 `hidden`으로 바꾸고 다시 배치)
+- 원인
+  - absorb는 토스트 요소의 **현재 상자**만 덮는다.
+  - 결과 토스트("… 차단을 취소했습니다", "… 다시 차단했습니다")는 버튼이 없어서 원래 토스트보다 좁다.
+  - 가운데 정렬이므로(`left:50%; translateX(-50%)`) 오른쪽 끝이 안쪽으로 들어온다.
+  - 결과 토스트는 저장이 끝나면(보통 수십 ms) 뜨므로, 대개 두 번째 클릭보다 먼저 나타난다.
+- 증거(실제 Chrome 154, `rv-ux3/toast_test3.js` B와 `edge_test.js`)
 
-### [nit] N1 대체된 호출이 후속 변경의 실패를 받음 — 오해를 부르는 토스트
-- 위치: `addOp` `:593`, `99-main.js:93-107`
-- 증거: 차단 X 쓰는 중에 해제 X → 차단 호출자는 해제 결과를 받는다. 해제가 실패하면 차단은 이미 저장됐는데도 "차단 저장 실패" 토스트가 뜬다(화면은 rollback diff로 맞음). 설계 의도(대체)라 nit. 원하면 99-main catch에서 `store.isBlocked(uid)`가 이미 기대 상태면 토스트를 생략.
+  | 페이지 | 토스트 폭(원래 → 결과) | 버튼 오른쪽 끝~토스트 끝 | 버튼 가운데 | 버튼 오른쪽 끝 −1px | 버튼 위 +1px |
+  |---|---|---|---|---|---|
+  | 데스크톱 | 237 → 193px(한쪽 22px 축소) | 18px | 0/12 샘 | **12/12 샘** | 1/12 |
+  | 터치(coarse) | 262 → 221px(한쪽 20.5px 축소) | 10px | 0/12 | **12/12 샘** | 3/12(아래 −1px도 3/12) |
 
-### [nit] N2 중복 uid 처리 기준이 `parseDisk`와 `planChunks`에서 반대
-- 위치: `parseDisk:200`(뒤 청크가 이김) vs `planChunks:310`(앞 청크가 이김)
-- 증거: bl_0 `9:first`, bl_2 `9:second` → 쓰기 후 저장소엔 `first`, 메모리(`disk = merged`)엔 `second`(다음 onChanged refresh로 맞춰짐). 동시 쓰기(#26)로 중복이 실제로 생길 수 있다.
-- 수정안: `parseDisk`에서 `if (!entries.has(uid)) entries.set(uid, rec)`로 앞 청크 우선 통일.
+  - 정리하면 데스크톱은 버튼 오른쪽 약 4px, 터치는 약 10px가 결과 토스트 밖으로 나간다.
+  - 터치의 위아래 끝도 샌다. 결과 토스트가 늦게 뜨면 다시 올라오는 애니메이션(`translateY(12px)→0`) 동안 상자가 아래로 내려가 있기 때문이다.
+  - 실행 취소는 어느 경우에도 1회만 실행된다. 샌 클릭은 토스트 아래 페이지 요소(목록 링크 등)를 누른다.
+- 영향: N1과 MINOR-2R에서 막으려던 "두 번째 클릭이 링크로 감"이 좁은 띠에 남는다. 확률은 낮다. 버튼 끝을 더블클릭하거나 더블탭해야 하고, 결과 토스트가 두 번째 클릭보다 먼저 떠야 한다.
+- 수정안(CSS만, **검증 완료**: `rv-ux3/build_patched.js` → `t.p.html`·`t_coarse.p.html`):
+  ```css
+  /* 흡수 중엔 결과 토스트가 좁아지거나(버튼 없음) 다시 떠오르며 아래로 밀려 있어도
+     원래 실행 취소 버튼 자리를 덮도록 보이지 않는 여백을 둔다. */
+  #fmkb-toast.fmkb-toast-absorb::after {
+    content: '';
+    position: absolute;
+    top: -16px; bottom: -16px; left: -48px; right: -48px;
+  }
+  ```
+  - 측정 결과(같은 12조합 × 5지점: 가운데, 오른쪽 −1, 왼쪽 +1, 위 +1, 아래 −1): 데스크톱과 터치 모두 **0/12**다.
+  - 흡수가 끝난 650ms 시점에 결과 토스트 오른쪽 끝에서 20px 바깥을 누르면 페이지에 닿는다(흡수 뒤 부작용 없음).
+  - 위아래 8px로는 터치 위쪽에서 2/12가 여전히 샜다. 그래서 16px로 둔다(translateY 12px보다 크게).
+  - `#fmkb-toast`가 `position:fixed`라 containing block이 된다. `content:''`라 접근성 트리와 배치에 영향이 없고, absorb 동안(≤500ms)에만 있다.
 
-### [nit] N3 같은 레코드 재추가·닉 변경이 청크 안 순서를 바꿔 불필요한 재쓰기
-- 위치: `planChunks:366-368` — `removeAt` 뒤 `put`은 청크 끝에 붙인다. 쓰기 성공 후 콜백 오류 → 재시도 같은 경우 내용이 같아도 그 청크를 다시 쓴다. 영향은 청크 1개. 원하면 같은 인덱스에 교체.
+### [nit] N11 (R5 수정의 부작용) 보이는 문구가 aria-hidden이라 실행 취소 버튼이 문맥 없이 읽히고, 숨긴 뒤에도 마지막 문구가 접근성 트리에 남음  (차원: 접근성, 선택)
+- 위치: `src/content/50-toast.js:104`(msg `aria-hidden`), `:63-70`(liveEl은 숨김 뒤에도 문구 유지)
+- 증거(AX 트리)
+  - 버튼의 accessible name은 "실행 취소"이고 description이 없다. 직전에는 role=status 안에 문구와 함께 있었다.
+  - 낭독을 놓쳤거나, 화면 낭독기의 탐색 모드나 터치 탐색으로 버튼에 간 사용자는 무엇을 취소하는지 알 수 없다.
+  - 토스트가 숨겨진 뒤에도 status 노드에 "H 님을 차단했습니다"가 남는다. 탐색 모드로 페이지 끝까지 읽으면 지난 안내가 읽힌다.
+- 수정안(검증: `rv-ux3/desc.js`. 적용 시 버튼 description이 "닉 님을 차단했습니다"가 된다):
+  ```js
+  msgEl.id = 'fmkb-toast-msg';                            // ensureEl
+  actionEl.setAttribute('aria-describedby', 'fmkb-toast-msg'); // aria-hidden 대상도 직접 참조는 설명에 포함됨
+  // (선택) hideNow 끝에: if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; } liveEl.textContent = '';
+  ```
+  - 지운 텍스트는 aria-relevant 기본값(additions text)에서 낭독되지 않는다. 그래서 숨긴 뒤 비워도 안전하다.
 
-### [nit] N4 `importMany` 주석 "함께 성공·실패"가 #27 분할에서 엄밀히는 아님
-- 위치: `:829` — 디스크에 있고 pending `del`이 걸린 uid를 가져오면(같거나 작은 레코드) `grows=false`로 분류돼 나머지가 QUOTA로 거절돼도 그 항목만 저장될 수 있다. 주석을 "대부분 함께"로 고치거나 import 변경은 항상 grow로 취급.
-
-### [nit] N5 `persistRun` 예기치 못한 throw 시 waiter 영구 대기 방어 없음
-- 위치: `:509-538` — 현재 경로에선 throw 지점을 찾지 못했지만 실행 Promise를 아무도 보지 않으므로, throw되면 waiter가 영원히 pending + 미처리 reject. `try { … } catch (e) { rollback(ops, coded('WRITE_FAILED', …, e)); }`로 감싸기 권장.
-
-### [nit] N6 문서 잔재
-- 계약 §5 레이아웃(`store-api-contract.md:239`): 빈 `[]` 청크(작은 목록도 최대 8키), 문자열 청크는 첫 쓰기에서 배열로 다시 씀을 추가.
-- 헤더 `10-store.js:26`: 안정 패킹 문장이 "남은 한계" 아래에 있음 → 위 설계 설명으로 이동.
+### [INFO] 확인 필요·관찰(결함으로 집계하지 않음)
+- **창을 다시 활성화할 때**: 실행 취소 버튼에 포커스를 둔 채 다른 창이나 탭으로 갔다가 돌아오면, 브라우저가 버튼에 focusin(relatedTarget null)을 다시 보낸다. 이때 `returnFocusTo`가 null이 된다. 그러면 Enter를 눌렀을 때 원래 자리가 아니라 body로 간다. 이전 동작으로 내려갈 뿐이고, 엉뚱한 곳에 포커스가 가지는 않는다. headless에서는 창 blur가 재현되지 않아 분석으로만 판단했다.
+- **업데이트로 없어진 이전 인스턴스의 토스트**: 옛 토스트 제거가 새 인스턴스의 '첫 show 때'에만 일어난다(`ensureEl`).
+  - Firefox에서는 업데이트 때 옛 content script가 정리되고 새 스크립트가 주입된다고 추정한다.
+  - 실행 취소 토스트가 떠 있는 5초(또는 멈춘 동안)에 업데이트가 일어나면 다음 일이 생길 수 있다. 옛 토스트가 `fmkb-toast-show·has-action`인 채 새 CSS로 다시 보이고 클릭을 받으며, 버튼은 동작하지 않는다. 이 상태는 새 인스턴스가 처음 토스트를 띄울 때까지 이어진다.
+  - main도 같은 구조였고(2초 창) 지금은 창만 길어졌다. 극히 드물다.
+  - 원하면 50-toast 모듈이 로드될 때 `document.getElementById(NS.TOAST_ID)?.remove()`를 한 번 실행하면 된다. 실 Firefox 업데이트 경로는 확인하지 못했다.
+- **작업 단위 마감(Phase 6)**: `manifest.json` version이 아직 0.8.2다. 0.9.0으로 올려야 한다. `CLAUDE.md` 변경 이력에도 이번 행이 없다.
 
 ### 확인 완료(결함 없음)
-- `planChunks`: `fits()` 키 길이 반영(bl_10에서도 예산 준수), `removeAt`/`put`의 쉼표·`[]` 계산 = 실제 `valueLen` 합(퍼징 일치), 범위 밖(`bl_600`) 항목 재배치 + 키 정리, 손상 청크 덮어쓰기, 예전 초과 항목 제자리·작아지는 닉 변경 제자리·커지면 QUOTA, 재채움 조건(1,000명 해제 후 14→5청크)과 진동 없음, 끝쪽 trim과 `stale` 목록 일치(trim된 인덱스 = `n >= built.chunks.length`).
-- 용량 사전 검사는 여전히 커지는 쓰기에만, 계획 레이아웃의 `total`로 계산. `importMany`의 `buildChunks` 기반 사전 추정과 `planChunks` 실제 총량 차이는 청크당 수 바이트(안내 인원 1,364명 그대로 성공).
-- waiter: 컨텍스트 무효 reject+되돌림, 빈 ops, 실행 중 대체(차단→해제→재차단 모두 resolve, 최종 저장소 일치), `importMany` `Promise.all` 형제 reject 처리됨(미처리 0).
-- 호환: v0.7.1·v0.8.1 판독기 모두 정규식으로 `bl_\d+`를 모아 빈 청크·틈 허용. v0.8.1 작성기는 조밀하게 다시 채울 뿐 손실 없음.
-- 성능: 1,500명 `importMany` 19ms, 해제 1회 5ms, `planChunks` 평균 1.2ms.
-- `99-main.js`: await 뒤 `isBlocked` 재확인으로 차단→즉시 해제 순서가 화면에 맞게 반영.
-- 보안·MV3: DOM/권한 변경 없음, manifest 버전만 0.8.2.
+- **보안**
+  - 토스트의 메시지·라벨·live 문구, 팝업의 줄 오류·live 문구는 모두 `textContent`로 넣는다.
+  - `role`·`aria-*`·클래스는 고정 문자열이다.
+  - `CSS.escape`를 유지한다. 권한·manifest 변경은 없다.
+- **토스트 생명주기**
+  - `hideNow`는 `action = null`을 포커스 되돌림보다 먼저 실행한다. 그래서 되돌림이 일으키는 focusout → resume은 아무것도 하지 않는다.
+  - 되돌림 대상은 토스트 밖이라 el의 focusin이 다시 불리지 않는다.
+  - 두 번째 mousedown이 아직 보이는 버튼에 포커스를 줘도, 그 click 처리에서 다시 되돌린다. 포커스가 숨은 버튼에 남지 않는다(`toast_test_prev` T2).
+- **MutationObserver**
+  - liveEl도 첫 생성 때 함께 삽입된다. 이후 텍스트 변경은 Text 노드 추가뿐이라 `handleAddedNode`의 nodeType 검사에서 바로 빠진다.
+- **팝업 N9**: `lastActedUid`는 `beginRowWork`가 성공할 때만 갱신된다. `endRowWork`는 그 uid가 끝날 때만 `focusUid`를 정한다. 사용자가 검색창 등으로 옮긴 포커스는 `render`의 body 검사로 지켜진다.
+- **계약 대조**: C3·C7·C9·C10과 맞는다(직전 리뷰와 같음, 이번 수정은 store 사용 방식을 바꾸지 않음).
 
----
-
-- 담당: extension-reviewer
-- 갱신: 2026-10-05 **재리뷰(델타)** — PR B(저장 계층 쓰기 안전성 재설계, 이슈 #13·#14·#15) 1차 지적 M1·R2~R7 + QA minor-2 수정분. 브랜치 `fix/store-write-safety`, 미커밋 변경분. 1차 리뷰 본문은 아래 "1차 리뷰 기록"에 그대로 둔다.
-- 대상(델타): `src/content/10-store.js`(`valueLen`·`BARE_BIG_INT_RE`, `buildChunks` O(n), `writeMerged`의 `diskTotal`·커지는 쓰기만 사전 검사·stale 청크 `[]` 비우기·remove best-effort·`lastRead`, `persistOps`/`carryingRun`, `classify` 문자열 코드만 신뢰, `importMany` `err.fit` 평균), `src/popup/popup.js` 주석, 계약 C3·C8·C11, `sync-sharded-storage` 스킬, popup/content/storage-engineer 정의, README.
-- 방법론: `.claude/skills/extension-code-review/SKILL.md`
-- 심각도: **blocker** > **major** > **minor**. 검토하지 못한 항목은 "미검토"로 분류한다.
-- 상보성: 병렬 QA 재실행 결과는 근거로 쓰지 않았다. 모의 저장소(`scratchpad/rv/mock2.js`, `STORE_SRC_PATH`=워크트리 `10-store.js`: 키 정렬 읽기, Chromium JSONWriter 용량 계산, 전 컨텍스트 비동기 onChanged)로 기존 r1~r6을 다시 돌리고, 델타 전용 프로브 4개(`scratchpad/rv2/p1~p4`)를 새로 작성했다. 리더 모음 `store-b/t_b.js` 50/50 재현.
-
-> **재리뷰 요약:** 1차 지적 7건(M1, R2~R7)과 QA minor-2가 모두 닫혔다. 바뀐 줄에서 새 결함은 찾지 못했다. 용량 추정은 2만 건 퍼징에서 Chrome 실제 크기보다 **작게 잡은 경우가 0건**이고(과대는 숫자열이 든 닉, int32 범위 10자리 정수 같은 비현실·적대 입력에서만 최대 +4B), 청크 합 = `built.total` = 실측 합이 정확히 일치한다. 한도 근처 10자리 UID 목록에서도 해제가 통과하고, 모의 Chrome이 정확히 102,400B까지 채워 준다(가용 용량 손실 0). 남은 것은 문서 잔재 2곳(계약 C11 ④의 `>`·`&` 보정 표기, 계약 §5의 remove·용량 검사 설명)과 INFO 1건(같은 실행에 함께 실린 차단+해제가 커지는 쓰기면 해제도 같이 거절)이다. 둘 다 머지를 막지 않는다. **최종 판정: 머지 가능(MERGE). blocker 0 / major 0 / minor 1(문서) / INFO 1.**
-
-> **PR #23 최종 독립 리뷰(2026-10-05, 푸시된 e5119c8 기준): MERGE, minor 7** — #13·#14 해결, #15는 핵심 해결·하위 항목 후속 이슈(#25 안정 패킹, #26 기기 간 동시 쓰기, #27 같은 실행 묶음 거절, #28 팝업 즉시 닫힘 실브라우저 확인). 반영: M1 예전 버전의 초과 크기 항목이 다른 차단·해제를 막던 경우(기존 항목은 혼자 청크, 크기 판단은 브라우저), M4 더 새 스키마 덮어쓰기 거부(`SCHEMA_NEWER`), M5 content 목록 읽기 실패 시 재시도(탭 복귀·5초, 최대 3번), M6 팝업은 load 전 가져오기·내보내기 비활성 + C10 문구, M7 헤더 문구, N1 스킬 문구, M2는 C11·README에 한계로 기록. 후속 변경 리뷰 OK-TO-COMMIT + QA PASS(모의 54/54·29/29, 실 Firefox 156 후속 게이트·회귀 29/29, content 재시도 jsdom 14/14).
-
-## 재리뷰 진행 현황
-
-| 차원 | 상태 | 비고 |
-|------|------|------|
-| 1. 정확성 | ✅ 검토완료 | M1·R2 닫힘. `BARE_BIG_INT_RE`·`buildChunks` 경계·`diskTotal` 비교·`carryingRun` 수명 모두 정상 |
-| 2. 보안 | ✅ 검토완료 | 델타에 DOM·권한 변경 없음 |
-| 3. 견고성 | ✅ 검토완료 | R3·R5·R7 닫힘. stale `[]` 잔존 시 다음 쓰기에서 재정리 확인. INFO-4(동반 실행 거절) |
-| 4. 유지보수성 | ✅ 검토완료 | R6 대부분 닫힘, 잔재 2곳(minor R6') |
-| 5. MV3/베스트프랙티스 | ✅ 검토완료 | `node --check` 3파일 통과, manifest 0.8.0 유지 |
-| 6. 성능 | ✅ 검토완료 | R4 닫힘: `buildChunks(1501)` 26~32ms → 2.6~3.8ms |
-
-> **최종 판정: 머지 가능(MERGE). blocker 0 / major 0 / minor 1 / INFO 1.** R6'은 커밋 전에 문구 2곳만 고치면 되고, 고치지 않아도 동작에는 영향이 없다.
-
-## 1차 지적 종결 확인
-
-| ID | 1차 심각도 | 상태 | 근거 |
-|----|-----------|------|------|
-| M1 | major | **닫힘** | ① `valueLen`이 `<`만 +5, U+2028/9 +3, **따옴표 밖** 10자리 이상 정수만 +2(`/[:,\[]-?\d{10,}(?=[,\]}])/g`). UID는 문자열이라 앞에 `"`가 와서 안 걸린다. ② `writeMerged`가 디스크 원값으로 `diskTotal`을 재고 `built.total > diskTotal`일 때만 `checkQuota`. `r1_overquota`: 6자리·10자리 모두 해제 2회 ok. `p4`: 모의 Chrome이 102,400B 정확히까지 채움 → 추정이 Chrome과 일치 |
-| R2 | minor | **닫힘** | `r2_idem`: 1차·2차 모두 QUOTA reject. `p2-B`: 이미 끝난 실행 뒤 같은 차단은 쓰기 없이 resolve(쓰기 1회), 실패·되돌림 뒤 재차단은 새 쓰기로 성공, 진행 중 실행의 중복 해제는 같은 Promise(`q2===q1`), 실패 시 둘 다 reject |
-| R3 | minor | **닫힘** | `p2-A`: 3청크→1청크 축소 시 `set bl_0,bl_1:[],bl_2:[]` 한 번 + remove 실패 → **200/200 resolve**, 경고 1회, 다른 탭·새 load 모두 50명. 다음 쓰기는 `[]`를 다시 set하지 않고 remove만 재시도. 다시 늘릴 때 `bl_1`(`[]`)을 덮어쓰고 남은 `bl_2` 제거 → 199명 일치 |
-| R4 | minor | **닫힘** | 항목당 `valueLen` 1회, 청크 길이 = 2 + Σlen + 쉼표. `p1`: n=1/50/500/1600에서 `built.total` = 청크별 `quotaLen` 합(정확 일치), 최대 청크 7,161B ≤ 7,168B, 덜 채워진 청크 0. `r5_perf2`: 1,501명 2.6~3.8ms |
-| R5 | minor | **닫힘** | `OUR_CODES[e.code]`(문자열)만 신뢰. 숫자 `code`는 메시지 분류로 가고, 최종 throw는 `e.code === code`가 아니면 `coded(...)`로 감싸 계약 4개 코드만 나간다 |
-| R6 | minor | **대부분 닫힘** | store 헤더(기기 간 = sync 전파, 0.8.0+), C3(실 팝업 미검증 명시), C8, C11(커지는 쓰기만 검사, `[]` 비우기, 겹친 청크 다중 유실, 혼합 버전), 스킬 정규화 설명, popup 주석 2곳, popup/content-engineer reject 처리, README 반영 확인. 잔재 2곳은 R6' |
-| R7 | minor | **닫힘** | `p2-C`: 동결 탭(onChanged 놓침)에서 첫 시도 읽기 성공 → set 일시 실패 → 이후 읽기 실패 3회 → 최종 `WRITE_FAILED`. 첫 읽기의 외부 차단 `999`가 `disk`에 반영되고, diff `{added:[999], removed:[555]}` 1회 통지 |
-| QA minor-2 | minor | **닫힘** | `p3`: 1,000명 상태에서 2,000명 가져오기 → `fit` 264 → 264명 가져오기 성공 → 이후 단건 17명 추가 가능(약 6% 보수적, 재실패 없음) |
-
-## 델타 집중 점검 (리더 요청 항목)
-
-| 질문 | 결론 | 근거 |
-|------|------|------|
-| `BARE_BIG_INT_RE` — 배열 시작·음수 | **정상** | `[`·`:`·`,` 뒤 + 선택 `-` + 10자리 이상 + 뒤가 `,`·`]`·`}`. `[1234567890123,1234567890123]`처럼 연속이어도 lookahead가 `,`를 소비하지 않아 둘 다 잡힌다. 음수 `-3000000000` 보정됨. 소수(`1718000000000.5`)·지수(`1e+21`)는 뒤가 `.`/`e`라 제외(Chrome도 `.0`을 안 붙임). int32 범위 10자리(1e9~2147483647)는 +2 과대지만 ms 타임스탬프로는 1970년 1월뿐이라 무시 가능. 퍼징 2만 건 과소 0 |
-| 닉 안의 숫자열 | **안전(과대)** | 닉 `x:1234567890,y` 같은 문자열 안 패턴도 +2로 세어 과대 쪽으로만 틀린다 |
-| `buildChunks` 경계 수식 | **정확** | 엔트리 사이에 숫자가 걸치는 경계가 없어(UID가 문자열) 엔트리별 보정 합 = 청크 전체 보정. 단일 항목 검사는 분할 전 키(`bl_9`→`bl_10`) 기준이라 최대 1B 차이, 7,168 대 8,192 여유로 무해 |
-| stale `[]`와 `chunkIdx`/`diskTotal` | **정상** | `[]` 키는 `chunkIdx`에 들어가 `diskTotal`에 6B씩 더해진다(축소 판정 쪽으로 보수적). `chunkStr`가 `'[]'`라 재-set 생략, remove만 재시도. 인덱스가 다시 필요해지면 내용 비교로 덮어씀. `MAX_ITEMS` 검사는 잔존 `[]` 키를 세지 않지만 1~2개라 한도(512)와 무관 |
-| `diskTotal` vs 재청킹 | **정상** | 구버전 레이아웃에서 첫 쓰기로 청크가 1개 늘어도 키+괄호 약 7B, 해제 1건은 최소 약 40B를 줄여 축소로 판정된다. 메타 없는 디스크는 `diskTotal`이 메타만큼(16B) 크게 잡히지만 0.7.x도 메타를 썼으므로 실무 영향 없음 |
-| `carryingRun` — 실행 종료·op 제거 뒤 | **정상** | 성공하면 같은 seq의 pending이 지워져 `null` → `Promise.resolve()`(이미 저장됨). 실패하면 되돌림으로 pending이 지워지고 `map`에서도 빠져 다음 호출은 새 op 경로를 탄다. `p.run`은 항상 아직 시작 전인 실행(`queuedRun` 또는 새 실행)이라 그 실행이 반드시 스냅샷한다. 메모리 전용 모드(저장소 없음)는 pending이 남지만 실행이 resolve돼 있어 기존과 같다 |
-| `lastRead` — 재시도·동시 refresh | **정상** | `persistRun` 시작 때 `null`로 초기화하고 읽기 성공마다 갱신한다. 재시도 중 `sleep`도 직렬 큐 안이라 refresh가 끼지 못하므로 `lastRead`가 가장 최근 디스크다. 이후 읽기가 실패하면 앞 시도의 읽기가 남는데, 그 사이 다른 읽기가 없으므로 여전히 최신이다 |
-| set 성공·콜백 오류(일시 오류 오탐) | **수용** | `disk = lastRead`(쓰기 전 상태)로 되돌리지만 자기 쓰기의 onChanged refresh가 곧 실제 디스크로 맞춘다(1차 R3 분석과 동일) |
-
----
-
-## 재리뷰 발견 사항
-
-### [minor] R6' 계약 문서 잔재 2곳  (차원: 유지보수성·문서)
-- 위치·증거:
-  1. `.claude/workspace/store-api-contract.md:162`(C11 ④) "Chrome 방식 용량 계산(키+JSON UTF-8, **`<`·`>`·`&`**·U+2028/9·큰 숫자 보정 …)". 코드는 이제 `<`만 보정한다(Chromium은 `>`·`&`를 이스케이프하지 않음 — M1 수정의 핵심).
-  2. 같은 파일 `:242` "남는 청크 remove(**remove 실패 시 재시도 때 다시 읽어 바로잡음**)", `:244` "**초과 시 쓰기 전에 QUOTA로 거절**". 현재는 남는 청크를 같은 set에서 `[]`로 비우고 remove 실패는 경고만 하며, 사전 검사는 커지는 쓰기에만 한다(C11 본문·스킬 `SKILL.md:32-33`과 불일치).
-- 수정안: ① `` `<`·U+2028/9·따옴표 밖 큰 정수(`.0`) 보정 `` ② "남는 청크는 같은 set에서 `[]`로 비우고, 키 remove는 정리용(실패 시 경고, 다음 쓰기에서 재시도)" / "목록이 커지는 쓰기만 사전 검사해 넘으면 QUOTA로 거절(줄이는 쓰기는 브라우저 판정)". 동작 변경 없음.
-- (참고, 기존 잔재) `.claude/skills/sync-sharded-storage/SKILL.md:21-23` 직렬화 규칙 1·3이 `{nick, addedAt}` 순서와 "`JSON.stringify`로 저장"을 적고 있다. 실제는 키 정렬 레코드(`{addedAt, nick}`)를 네이티브 배열로 저장한다. 이번 PR 이전부터 있던 문구라 별도 정리 대상으로만 남긴다.
-
-### [INFO-4] 같은 실행에 함께 실린 차단+해제가 커지는 쓰기면 해제도 같이 거절됨  (견고성, 수용 가능)
-- 재현(`p4_coalesce.js`): 모의 Chrome을 102,400B까지 채운 뒤 같은 컨텍스트에서 `block(긴 닉)`과 `unblock`을 같은 틱에 호출 → 한 실행으로 합쳐져 순증이므로 사전 검사 → **둘 다 QUOTA**. 이어서 `unblock`만 다시 부르면 성공.
-- 판단: 실행 단위 전부-또는-전무 시맨틱이라 일관되고, 해제를 다시 하면 풀리므로 잠금이 아니다. 팝업은 해제만 하고, content의 우클릭은 사람이 같은 틱에 차단과 해제를 동시에 할 수 없어 현실 경로가 없다. README "해제는 항상 가능"과도 실질적으로 충돌하지 않는다. 기록만 남긴다.
-
----
-
-## 재리뷰 실측 요약
-
-| 시나리오 | 결과 | 파일 |
-|----------|------|------|
-| 리더 모음 | 50/50 PASS | `store-b/t_b.js` |
-| 한도 근처 해제(6·10자리 UID) | 1·2회 모두 ok | `rv/r1_overquota.js` |
-| 멱등 경로 실패 전파 | p1·p2 모두 QUOTA reject | `rv/r2_idem.js` |
-| 혼합 버전·업그레이드 재청킹 | 1차와 동일(혼합 버전 덮어쓰기는 문서화됨) | `rv/r4_mixed.js`, `rv/r6_upgrade.js` |
-| `buildChunks(1501)` | 2.6~3.8ms | `rv/r5_perf2.js` |
-| `valueLen` 퍼징 2만 건 vs Chromium JSON | 과소 0 / 과대 6,667(적대 닉·int32 10자리만, 최대 +4B) / 일치 13,333 | `rv2/p1_accounting.js` |
-| 청크 수식 vs 실측 | n=1·50·500·1600 모두 `built.total` = Σ`quotaLen`, 최대 7,161B | `rv2/p1_accounting.js` |
-| stale `[]`·remove 실패·재성장 / `carryingRun` / `lastRead` | 위 종결 표 참고 | `rv2/p2_paths.js` |
-| `err.fit` 정확도 | fit 264 → 가져오기 성공 → 단건 17 추가 | `rv2/p3_fit.js` |
-| 동반 실행 거절 | 결합 시 QUOTA 2건, 해제 단독 재시도 ok | `rv2/p4_coalesce.js` |
-
-`r3_perf.js`는 스크립트 자체의 용량 초과 가져오기에서 처리하지 않은 QUOTA로 끝난다(store 결함 아님, 리더 확인과 동일).
-
-## 재리뷰 미검토
-
-- **실 브라우저**: 이번에도 모의 저장소 근거뿐이다. 1차 "미검토" 항목(고아 content script 토스트, 팝업 해제 직후 종료, 두 탭 동시 조작)은 그대로 남는다. 머지 전 실 Chrome·Firefox 확인을 권한다.
-- **Firefox 용량 계산**: Firefox는 정수에 `.0`을 붙이지 않는 것으로 보여 추정이 항목당 약 2B 과대다. 축소 쓰기는 검사하지 않으므로 해제는 막히지 않고, 커지는 쓰기만 약 3% 일찍 거절된다(안전 방향). 소스 확인은 하지 않았다.
-
----
-
-# 1차 리뷰 기록 (2026-10-05, FIX-REQUIRED — 위 재리뷰로 종결)
-
-## 검증 근거
-
-### 동시성 모델 점검 (코드 추적 + 모의)
-
-| 질문 | 결론 | 근거 |
-|------|------|------|
-| `queuedRun` 리셋 시점 | **정상** | `requestPersist`(`10-store.js:348-356`)는 `queuedRun = run`을 동기로 대입하고, task는 `serialTail.then`(마이크로태스크 이후)에서 `queuedRun = null` → `persistRun()`을 실행한다. `persistRun`의 첫 `await` 전 구간(`contextAlive`·`hasStorage`·`snapshotOps`)이 같은 틱이라, 리셋과 스냅샷 사이에 끼어드는 `addOp`이 없다. 이후 `addOp`은 모두 새 `requestPersist`를 부른다(`block` 멱등 경로 제외 → R2) |
-| 되돌림 vs 더 새로운 op | **정상** | `rollback`(`:336-342`)과 성공 정리(`:322-325`) 모두 `p.seq === o.seq`일 때만 pending에서 뺀다. 실행 중 같은 uid에 `unblock`이 들어오면 seq가 달라 남고, 그 op는 자신이 만든 다음 실행에 실린다 |
-| refresh와 미저장 로컬 변경 | **정상** | `scheduleRefresh`는 `disk`만 교체하고 `recompute`가 pending을 다시 얹는다. refresh의 `syncGet` await 중에 `block`이 들어와도 그 op는 pending에 있어 보존되고, `removed` 오통지도 없다(구 clobber 경쟁의 구조적 해소) |
-| 재시도 멱등성 | **정상** | 재시도마다 `get(null)`을 새로 하고 같은 ops를 다시 병합한다. 콜백은 오류였는데 실제로는 set이 반영된 경우에도 다음 시도에서 차이 0 → set 생략 |
-| 성공 시 통지 | **정상** | 성공 후 `recompute(true)`는 쓰기 직전 읽기에서 발견한 **외부** 변경만 diff로 낸다(자기 변경은 이미 `map`에 있음). 자기 쓰기의 onChanged → refresh는 diff 0 |
-| 되돌림 시 통지 | **정상(중복 1회 가능)** | 되돌림은 `removed`(block 실패)/`added`(unblock 실패)를 통지한다. content는 observer가 pending 동안 숨긴 새 노드도 이 통지로 복구한다. 팝업은 onChange 콜백과 `.catch`의 `refresh()`가 둘 다 돌아 2회 재렌더(무해). set 성공 + remove 실패 후 되돌림이면 "되돌림 diff → onChanged refresh diff"로 2단 통지된다(R3) |
-| 누락 통지 | **대체로 없음** | 외부 쓰기는 자기 onChanged로 refresh가 예약된다. 단 동결 탭처럼 이벤트를 놓친 경우, 실패한 쓰기 실행의 읽기 결과는 버려진다(R7) |
-| `contextAlive` (Chrome 고아) | **정상** | 확장 재로드 뒤 남은 content script에서는 `chrome.runtime.id`가 `undefined`가 된다. `runtimeIdAtInit && !chrome.runtime.id` → false. 동기 throw("Extension context invalidated")도 `classify` 정규식으로 잡힌다 |
-| `contextAlive` (Firefox) | **정상** | Firefox content script에도 `runtime.id`가 노출된다(MDN: content script에서 쓸 수 있는 runtime API에 `id` 포함) → `runtimeIdAtInit` 설정됨. Firefox는 확장 언로드 시 content script 샌드박스를 nuke하므로, 접근 시 "dead object" throw → `catch` → false. 팝업·테스트(`chrome` 없음 → `storageAtInit=false` → true)도 의도대로 동작 |
-
-### M1 재현 — 한도 근처 기존 목록 (`scratchpad/rv/r1_overquota.js`)
-
-0.7.x 방식(평문 `byteLen(JSON.stringify)`로 7,168B 청킹)으로 기록한 목록을 Chrome 계산(모의, Chromium JSONWriter)으로 101.8KB까지 채운 뒤 새 store로 해제를 시도했다.
-
-| UID 자릿수 | 항목 수 | Chrome 실제 용량 | store 추정 | `unblock` 1회 | 2회 |
-|------------|---------|------------------|------------|---------------|-----|
-| 6 | 1,671 | 101,801B | ≤ 102,400 | ok | ok |
-| **10** | 1,569 | **101,855B** | **104,934B** | **REJECT QUOTA** | **REJECT QUOTA** |
-
-- 실제 fmkorea UID는 10자리가 흔하다(저장소 내 실측 샘플 `member_4120586159` 10자리, `member_515859774` 9자리).
-- 과대 폭은 **10자리 UID 문자열 1개당 +2B**(`/\d{10,}/`가 따옴표 안 숫자열까지 셈)이고, 1,569명이면 약 3.1KB다. 해제 1건은 약 65B만 줄이므로, 약 48명을 지워야 추정치가 한도 밑으로 내려간다. 그런데 그 해제가 하나도 통과하지 못한다. 결과적으로 **잠금**이다.
-- 수정안(아래 M1)을 복사본에 적용하자 같은 시나리오에서 해제가 통과했고, 모의 Chrome도 그 쓰기를 받아들였다(`r1_fixed.js`: 6자리·10자리 모두 ok).
-
-### 기타 실측
-
-| 시나리오 | 결과 | 파일 |
-|----------|------|------|
-| 앞 실행이 QUOTA로 실패하는 사이, 같은 uid로 `block` 재호출 | 1차 reject, **2차 resolve**, `isBlocked=false`, 디스크 없음 → R2 | `r2_idem.js` |
-| 1,500명: `block` 20회 평균(모의 `get(null)`+파싱+재청킹+백엔드 계산 포함) | 38ms/회. 앞쪽 uid 해제 1회는 16키 중 **15청크 재기록**(연쇄 시프트) | `r3_perf.js` |
-| 1,501명 `buildChunks` 단독(`importMany` 사전 검사의 동기 구간) | 26~32ms/회(Apple Silicon, Node) → R4 | `r5_perf2.js` |
-| 구버전(HEAD `10-store.js`)이 신버전 데이터 읽기 | 200/200 정상, 닉·addedAt 정상. 신버전 해제가 구버전 탭에 라이브 반영됨 | `r4_mixed.js` |
-| 신버전이 구버전 탭과 공존 | 신버전이 555를 추가한 직후(onChanged 전달 전) 구버전 탭이 666을 차단하자 **555가 사라짐**. 구버전은 메모리 맵 전체를 쓰기 때문이다(기존 동작이며 회귀 아님 → R6 문서화) | `r4_mixed.js` |
-| 구버전이 쓴 800명 → 신버전 첫 쓰기 | 7청크 전부 재기록(1회), 두 번째 쓰기부터는 `bl_6`만 기록 → INFO-3 | `r6_upgrade.js` |
-| 기존 모의 모음 | 47/47 PASS 재현 | `store-b/t_b.js` |
-
----
-
-## 발견 상세
-
-### [major] M1 용량 과대 추정 때문에 한도 근처 목록에서 해제까지 QUOTA로 거절됨  (차원: 정확성)
-- 위치: `src/content/10-store.js:103-110`(`quotaLen`), `:227-237`(`checkQuota`), `:273-274`(`writeMerged`의 검사 호출)
-- 증거:
-  ```js
-  var s = JSON.stringify(value);
-  var n = byteLen(key) + byteLen(s);
-  n += 5 * ((s.match(/[<>&]/g) || []).length);        // Chromium은 '<'만 <로 이스케이프한다. '>'·'&'는 원문 그대로
-  n += 3 * ((s.match(LINE_SEP_RE) || []).length);
-  n += 2 * ((s.match(/\d{10,}/g) || []).length);      // addedAt(.0)뿐 아니라 따옴표 안 10자리 UID·숫자 닉도 +2
-  ...
-  if (built.chunks.length + 1 > MAX_ITEMS || total > QUOTA_BYTES) { throw coded('QUOTA', ...) }  // 줄이는 쓰기도 동일하게 거절
-  ```
-  추정은 "넘치지 않게"라는 방향으로는 안전하다(과소 추정 경로 없음: `<`·U+2028/9·`.0`을 모두 보정한다). 문제는 과대 폭이 크고, **쓰기 방향을 보지 않는다**는 점이다. 0.8.0 이전 버전이 쓴 목록은 브라우저가 실제 계산으로 받아들인 것이라 `실제 ≤ 102,400`이다. 하지만 추정치는 102,400을 넘을 수 있다. 그 구간에서는 `block`뿐 아니라 `unblock`도 `checkQuota`에서 거절되고, 토스트는 "팝업에서 목록을 정리해 주세요"라고 안내한다. 그런데 팝업의 해제도 같은 이유로 실패한다. 완전 숨김 설계상 해제는 팝업이 유일한 경로이므로, 사용자는 sync 저장소를 직접 지우는 것 말고는 빠져나갈 방법이 없다.
-  - Chrome: 10자리 UID 기준 항목당 +2B → 약 3% 구간(위 실측).
-  - **Firefox(확인 필요)**: Firefox `storage.sync`의 용량 계산은 키 + JSON 문자열 길이이고, 정수에 `.0`을 붙이지 않는 것으로 안다. 그렇다면 addedAt 보정(+2)까지 전부 과대라 항목당 약 +4B, 약 6% 구간이 잠긴다. Firefox Android가 모바일 주 런타임이라 영향 범위가 Chrome보다 넓다.
-  - 발생 조건이 "기존 목록 약 1,500명 이상 + 한도 근처"라 드물다. 하지만 걸리면 기능 잠금이고, 이번 PR이 도입한 회귀다(0.7.x는 사전 검사 없이 브라우저 판정에 맡겼다).
-- 수정안(둘 다 권장, 최소 ①):
-  1. **줄어들거나 같은 쓰기는 사전 검사로 막지 않는다.** 최종 판정은 브라우저가 하고, 브라우저가 거절하면 `classify`가 QUOTA로 분류한다.
-     ```js
-     function checkQuota(built, otherBytes, prevTotal) {
-       var total = built.total + (otherBytes || 0);
-       var growing = !(typeof prevTotal === 'number' && built.total <= prevTotal);
-       if (built.chunks.length + 1 > MAX_ITEMS || (total > QUOTA_BYTES && growing)) { /* QUOTA */ }
-       ...
-     }
-     // writeMerged
-     var prevTotal = buildChunks(Array.from(parsed.entries.entries())).total; // 또는 디스크 키별 quotaLen 합(R4와 함께 O(n)으로)
-     checkQuota(built, parsed.otherBytes, prevTotal);
-     ```
-     (모의로 검증함: `scratchpad/rv/fixed-store.js` + `r1_fixed.js`.) `importMany`의 사전 검사는 항상 늘리는 쓰기라 그대로 둬도 된다.
-  2. **보정을 구조에 맞춰 정확히 한다.** 레코드 구조를 알고 있으므로 문자열 정규식 대신 다음처럼 센다. 그러면 정상 목록의 가용 용량 손실(현재 약 3~6%, 대략 50~100명)도 없어진다.
-     ```js
-     // 레코드당: addedAt이 int32 밖의 정수면 +2(".0"), 문자열(uid·nick)의 '<' 개수 ×5, U+2028/9 ×3
-     ```
-     Firefox까지 정확히 맞추려면 `.0` 보정을 Chrome에서만 적용해야 한다(`typeof browser === 'undefined'` 등으로 판별, 확인 필요). ①만 적용해도 잠금은 풀린다.
-  - 회귀 테스트: `r1_overquota.js`를 모음에 추가한다(10자리 UID, 실제 101.8KB 목록에서 unblock이 통과하는지).
-
-### [minor] R2 멱등 경로가 앞 실행의 실패를 모른 채 resolve함  (차원: 정확성)
-- 위치: `src/content/10-store.js:474-476`(`block`의 "이미 있고 nick 같음" 경로), `:492`(`unblock`의 "map에 없음" 경로)
-- 증거:
-  ```js
-  if (typeof nick !== 'string' || nick === existing.nick) {
-    return pending.has(uid) ? requestPersist() : Promise.resolve();   // 이 uid의 op는 이미 진행 중인 실행에 실려 있다
-  }
-  ```
-  진행 중인 실행 run1에 이미 실린 op에 대해 `requestPersist()`를 부르면 새 run2가 만들어진다. run1이 실패해 op를 되돌리면 run2는 실을 op가 없어 바로 resolve한다. 실측(`r2_idem.js`): 1차는 `QUOTA`로 reject, **2차는 resolve**인데 `isBlocked=false`이고 디스크에도 없다. `unblock`도 같다. pending del이 진행 중일 때 다시 부르면 `map.has`가 false라 즉시 resolve하고, 앞 실행이 실패하면 거짓 성공이 된다. 지금 소비자에서는 우클릭 메뉴가 `isBlocked`에 따라 차단/해제 중 하나만 보여 주고, 팝업은 버튼을 비활성화하므로 **도달하지 않는다**. 하지만 계약 C3("resolve = 저장 완료")을 API 수준에서 어기므로, 이후 소비자(예: 차단 메모 TODO)에서 드러날 수 있다.
-- 수정안: 멱등 경로는 실행이 끝난 뒤 의도가 실제로 성립하는지 확인한다.
-  ```js
-  function persistAndVerify(uid, wantBlocked) {
-    return requestPersist().then(function () {
-      if (map.has(uid) !== wantBlocked) throw coded('WRITE_FAILED', '앞선 저장이 실패해 되돌려졌습니다.');
-    });
-  }
-  // block 멱등:   return pending.has(uid) ? persistAndVerify(uid, true) : Promise.resolve();
-  // unblock 없음: return pending.has(uid) ? persistAndVerify(uid, false) : Promise.resolve();
-  ```
-  (pending op마다 자기를 실은 실행 Promise를 기억해 그것을 돌려주는 방법도 된다.)
-
-### [minor] R3 `set`→`remove` 2단계 쓰기의 비원자성  (차원: 견고성)
-- 위치: `src/content/10-store.js:285-290`
-- 증거:
-  ```js
-  if (Object.keys(toSet).length) await syncSet(toSet);
-  if (stale.length) await syncRemove(stale);   // 여기서 최종 실패 → persistRun이 rollback + reject
-  disk = merged;
-  ```
-  ① set은 성공했는데 remove가 재시도 끝에 실패하면, 호출자는 "저장 실패"를 받고 메모리도 되돌려진다. 하지만 디스크는 이미 새 청크로 바뀌어 있다. 이어서 도착하는 onChanged refresh가 디스크 상태를 다시 반영하므로 최종 상태는 디스크와 일치한다. 다만 사용자는 실패 토스트를 본 뒤 결과가 성공 쪽으로 뒤집히는 것을 보게 된다. ② 정상 경로에서도 set과 remove 사이에 다른 컨텍스트의 refresh가 끼면, stale 청크에 남은 **삭제된 항목**이 잠깐 되살아난다. 그 탭은 잠깐 숨겼다가 다음 onChanged에서 복구한다(깜빡임).
-- 수정안: stale 키를 같은 `set` 호출에 `[]`로 함께 넣어 논리 상태를 한 번의 원자적 set으로 바꾸고, 이어지는 `remove`는 정리 작업(실패해도 run은 성공 처리, 다음 쓰기에서 다시 정리)으로 낮춘다. 빈 배열 청크는 `parseDisk`가 이미 관용 처리한다. 키 수(MAX_ITEMS)는 순간적으로 그대로라 문제없다.
-
-### [minor] R4 `buildChunks`의 이차 비용  (차원: 성능)
-- 위치: `src/content/10-store.js:204-224`
-- 증거:
-  ```js
-  var next = cur.concat([entry]);                                         // 매 항목마다 배열 복사
-  if (cur.length > 0 && quotaLen('bl_' + chunks.length, next) > CHUNK_BUDGET) {  // 청크 전체 stringify + 정규식 3개
-  ```
-  청크당 약 100항목이면 항목마다 약 100항목짜리 문자열화가 일어난다. 실측 1,501명 기준 26~32ms(데스크톱 Node)이다. 쓰기마다 1회(`writeMerged`), `importMany`는 최대 3회(사전 검사, 실패 시 `fit` 계산) 돈다. content script 메인 스레드에서 돌고, Firefox Android 중급 기기에서는 수 배가 될 수 있어 우클릭 차단 직후 잠깐 멈출 수 있다. 최대 약 1,600명(100KB)이 상한이라 치명적이지는 않다.
-- 수정안: 항목별 크기를 한 번만 잰다(`[`+`]` 2B + 항목 사이 쉼표 1B를 더하면 청크 JSON 길이와 같다). 보정(M1-②)도 항목 단위로 더하면 O(n)이 된다.
-  ```js
-  var size = 2 + byteLen(key);                    // '[' ']' + 키
-  // 항목마다: var es = entryQuotaLen(entry); if (cur.length && size + 1 + es > CHUNK_BUDGET) { push; size = 2 + byteLen(nextKey); }
-  //          size += (cur.length ? 1 : 0) + es;
-  ```
-
-### [minor] R5 `classify`가 숫자 `e.code`까지 그대로 통과시킴  (차원: 견고성)
-- 위치: `src/content/10-store.js:126-127`, `:317`
-- 증거:
-  ```js
-  function classify(e) {
-    if (e && e.code) return e.code;   // DOMException(code 22 등)·기타 code 있는 오류도 여기서 반환
-  ```
-  `syncCall`의 동기 `catch (e) { reject(e); }`로 들어오는 브라우저 예외(`DOMException`은 숫자 `code`를 가짐, 예: Firefox `QuotaExceededError` = 22)는 재시도 대상 판정을 건너뛴다. 또 `throw e && e.code ? e : …`로 그대로 reject되어 계약 C7의 4개 코드(`QUOTA`·`CONTEXT_INVALIDATED`·`WRITE_FAILED`·`READ_FAILED`) 밖의 값이 소비자에게 간다. 소비자는 일반 문구로 떨어지므로 크래시는 없지만, 용량 초과인데 "잠시 후 다시 시도" 문구가 나갈 수 있다.
-- 수정안: 우리 코드만 신뢰한다.
-  ```js
-  var OWN_CODES = { QUOTA: 1, CONTEXT_INVALIDATED: 1, WRITE_FAILED: 1, READ_FAILED: 1 };
-  if (e && typeof e.code === 'string' && OWN_CODES[e.code]) return e.code;
-  // 그 외에는 메시지·name으로 분류(e.name === 'QuotaExceededError' → QUOTA 추가)
-  ```
-  `:317`도 `OWN_CODES[e.code]`일 때만 원 오류를 그대로 던지고, 아니면 `coded(code, …, e)`로 감싼다.
-
-### [minor] R6 문서·주석 드리프트  (차원: 문서)
-- 위치·증거:
-  1. `src/content/10-store.js:25-26` "두 기기가 같은 읽기→쓰기 사이(**수 ms**)에 … 창이 좁아졌을 뿐". 기기 간 창은 수 ms가 아니라 **sync 전파 지연(수 초~수 분)**이다. 기기 B는 A의 변경을 아직 받지 못한 로컬 저장소를 읽고 병합한다. 게다가 앞쪽 uid를 해제하면 청크가 연쇄로 밀려 거의 모든 청크를 다시 쓴다(실측 16키 중 15). 그래서 키 단위 last-writer-wins의 피해 범위가 "한 유저"보다 클 수 있다. 계약 C11은 "기기 간에는 sync 전파 전"으로 맞게 적었고 스킬은 모호하다. 셋을 C11 표현으로 맞춘다.
-  2. 계약 C3 "(모의 테스트: 25ms 뒤 닫아도 저장됨)". 모의 저장소의 `get` 지연은 2ms 고정이라 실 브라우저 근거가 아니다. 이 프로젝트에는 mock 거짓 PASS 전례가 있다(2026-06-15). "실브라우저 확인 전"이라고 명시하거나 실측값으로 바꾼다(INFO-2).
-  3. 계약 C8 "내구성은 C3(**즉시 쓰기 동기 디스패치**)가 대체". 새 C3는 동기 디스패치가 아니라고 스스로 적고 있다. "C3(쓰기 완료 시 resolve)"로 정정한다.
-  4. `src/popup/popup.js:440-441` JSDoc "importMany는 … throw하지 않는다(계약 C10)". 이제 QUOTA·쓰기 실패 때 reject한다. `:598-599` "팝업 자신의 onUnblock은 '자기-쓰기'라 … 이 콜백이 호출되지 않으므로 … 중복 갱신이 없다". 실패(되돌림) 시에는 콜백과 `.catch`의 `refresh()`가 둘 다 돈다(무해하지만 주석은 사실과 다르다).
-  5. `.claude/skills/sync-sharded-storage/SKILL.md:19` "키 정렬로 쓰지 않으면 매번 '바뀐 청크'로 오판해 전체를 다시 쓴다". 새 구현은 `parseDisk`가 디스크 레코드를 `canonRec`로 정규화한 뒤 비교하므로, 쓰기 순서와 무관하게 비교가 안정적이다. 구 코드(정규화 없이 디스크 원문 문자열과 비교)에만 맞는 설명이다. "비교 전 양쪽을 정규형으로 맞춘다"가 실제 불변식이다. `10-store.js:22-23` 헤더도 같다.
-  6. **혼합 버전 경고 없음**: 0.7.x가 설치된 기기·브라우저 프로필은 여전히 메모리 맵 전체를 쓰므로, 0.8.0 기기가 방금 한 변경을 덮을 수 있다(`r4_mixed.js` 재현). #15의 보호는 **모든 쓰기 주체가 0.8.0 이상일 때만** 성립한다. README의 다기기 절이나 계약 C11 "남은 한계"에 "모든 기기를 0.8.0 이상으로 업데이트"를 적는다.
-  7. `.claude/agents/popup-engineer.md:37`에는 load 실패만 있고 `unblock`·`importMany` reject 처리(`err.code`별 문구, 재렌더)가 없다. content-engineer 정의도 block/unblock reject 처리를 언급하지 않는다. 다음 작업에서 에이전트가 catch를 빼먹지 않도록 한 줄씩 추가한다.
-- 수정안: 위 항목별 정정. 동작 변경은 없다.
-
-### [minor] R7 실패한 쓰기 실행의 읽기 결과를 버림  (차원: 견고성, 선택)
-- 위치: `src/content/10-store.js:266-291`, `:316`
-- 내용: `writeMerged`가 `get(null)`에 성공한 뒤 set에서 실패하면 `parsed`(최신 디스크)는 버려지고, `rollback`은 옛 `disk` 기준으로 `recompute`한다. 보통은 외부 쓰기의 onChanged가 refresh를 예약하므로 곧 맞춰진다. 하지만 동결 등으로 이벤트를 놓친 탭은 다음 이벤트(가시성 복귀 등)까지 stale이다. `writeMerged`가 읽기 직후 `lastRead = parsed.entries`를 남기고, `rollback` 전에 `disk = lastRead`로 갱신하면 된다(`set`이 이미 반영됐을 가능성은 R3 처리에 맡긴다).
-
-### [INFO-1] 재시도 백오프가 직렬 큐를 최대 약 7초 점유  (견고성, 수용 가능)
-- `persistRun`은 `await sleep(1000/2000/4000)`을 큐 안에서 수행한다. 그동안 refresh와 후속 block·unblock이 기다린다. content는 resolve 뒤에 숨기므로 우클릭 차단 반영이 최대 7초 이상 늦어질 수 있다. 다만 이 경로는 일시 오류에서만 타고, 레이트리밋(분당 120)은 수동 조작 빈도로는 사실상 닿지 않는다. 분당 한도라면 7초 안에 풀리지도 않아 결국 `WRITE_FAILED`로 안내한다. refresh는 읽기 전용이라 늦어져도 데이터 손상은 없고, 같은 큐에서 돌기 때문에 쓰기와 경쟁하지 않는다는 이점이 지연 비용보다 크다. 수용한다. 팝업이 재시도 중에 닫히면 그 해제는 저장되지 않지만, 사용자는 성공 표시를 본 적이 없으므로 "실패를 성공으로 보이지 않기" 원칙은 지켜진다.
-
-### [INFO-2] C3 변경: 팝업 조기 종료 창  (생명주기, 수용 가능)
-- 읽기→병합→쓰기 때문에 `sync.set`은 `get(null)` 왕복(같은 브라우저 IPC, 보통 수 ms. Firefox는 이보다 길 수 있음) 뒤에 나간다. 팝업은 resolve 후에 목록을 다시 그리므로 사용자는 자연히 결과를 기다리게 되고, 실질 위험은 낮다. 근거가 모의(2ms 고정 지연)뿐이므로 실 Chrome·Firefox에서 "해제 클릭 직후 Esc/바깥 클릭"을 한 번 확인할 것을 권한다(R6-2).
-
-### [INFO-3] 업그레이드 직후 1회 전체 재청킹  (호환성, 수용 가능)
-- 새 용량 계산(`.0`·이스케이프 보정)은 구 `byteLen` 청킹보다 약간 크게 잡으므로 청크 경계가 달라진다. 0.8.0의 첫 쓰기에서 모든 청크가 1회 재기록된다(`r6_upgrade.js`: 7/7). 이후에는 바뀐 청크만 쓴다. 쓰기 호출은 1회라 레이트리밋 영향이 없다. 구버전 기기와 번갈아 쓰면 그때마다 재청킹되지만 정합성 문제는 없다.
-
----
-
-## 차원별 양호 확인 (결함 아님)
-
-- **계약 적합성(직접 확인)**: 8개 API 이름·인자·반환 타입이 그대로다. reject 코드는 `QUOTA`·`CONTEXT_INVALIDATED`·`WRITE_FAILED`(쓰기), `READ_FAILED`·`CONTEXT_INVALIDATED`(load)로 계약 C2·C7과 일치한다(R5의 예외 경로 제외). `importMany`의 사전 검사는 메모리를 바꾸기 전에 돌고, `err.fit`은 0 이상 정수다. 실패한 load는 `loadPromise = null`로 캐시하지 않는다. 소비자 99-main은 load 실패 시 차단 없이 종료하고, block·unblock 실패 시 숨김·복구 없이 토스트만 띄운다. popup은 load 실패 시 `showFatal`(가져오기·내보내기 비활성), 해제·가져오기 실패 시 `storeErrorMessage` + 재렌더를 한다. 전부 계약 §4와 맞다.
-- **#14(읽기 실패 후 덮어쓰기) 해소**: 쓰기 실행은 매번 `get(null)`부터 하고, 읽기가 실패하면 throw → 재시도/실패 처리로 가서 set을 부르지 않는다. load 전이나 load 실패 후의 block도 디스크를 다시 읽어 병합하므로 목록을 지우지 않는다.
-- **#15(알림을 놓친 탭) 해소**: 쓰기는 pending op만 최신 디스크에 얹는다. 메모리 스냅샷을 쓰지 않으므로 stale 탭이 다른 곳의 해제를 되살리거나 차단을 지우지 않는다(같은 브라우저 안. 기기 간 한계는 R6-1).
-- **#13(실패를 성공으로 보임) 해소**: 무한 500ms 재시도가 없어졌고, 최종 실패 시 reject + 되돌림 + 통지를 한다. QUOTA는 사전 검사로 set 전에 거른다(M1의 과대 거절 문제는 별도).
-- **언로드 flush 부재 유지**: `pagehide`·`visibilitychange(hidden)` 쓰기가 없다. 새로 붙은 `pageshow(persisted)`·`visibilitychange(visible)`는 `scheduleRefresh`(읽기 전용)만 부른다. resurrection 통로가 다시 열리지 않았다.
-- **하위 호환**: 구 `{nick, addedAt}`·문자열 청크·메타 없음·숫자 uid를 모두 읽는다. `canonRec`로 양쪽을 정규화해 비교하므로 키 순서 차이로 매번 전체를 재기록하던 구 결함이 사라졌다(두 번째 쓰기부터 1청크만 기록). 구버전도 새 키 정렬 레코드를 이름으로 읽으므로 정상이다(`r4_mixed.js`).
-- **손상 데이터 관용**: 손상 청크는 건너뛰고 다음 쓰기에서 덮어쓴다(`chunkStr` 없음 → 차이로 판정). 중복 uid(이전 remove 실패 잔재)는 Map으로 합쳐지고 재기록으로 정리된다.
-- **보안**: 오류 문구는 상수 문자열과 숫자(`e.fit`)만 조합하고, `toast.show`·`setIoStatus`는 textContent 경로다. 가져오기 닉은 64자로 자른다(`NICK_MAX`). 권한·host_permissions 무변경이다.
-- **MV3**: `manifest.json`은 `version`만 0.8.0으로 바뀌었다. 저장 실패 시맨틱이 바뀌는 변경이라 마이너 범프가 적절하다. `node --check`는 `10-store.js`·`99-main.js`·`popup.js` 모두 통과했다.
-
-## 미검토
-
-- **실 브라우저 다중 컨텍스트**: 모든 동시성 판정은 코드 추적과 모의 저장소(키 정렬·JSONWriter 계산·비동기 onChanged 재현)에 근거한다. 실 Chrome·Firefox에서 (a) 고아 content script의 `CONTEXT_INVALIDATED` 토스트, (b) 팝업 해제 직후 종료(INFO-2), (c) 두 탭 동시 조작을 확인하지 않았다. 이 프로젝트의 전례(mock 거짓 PASS)를 감안하면 머지 전에 실 브라우저 확인을 권한다.
-- **Firefox `storage.sync` 용량 계산 방식**: M1의 Firefox 과대 폭(항목당 약 4B)은 Firefox가 정수에 `.0`을 붙이지 않는다는 이해에 기반한다. 소스로 확인하지 않았으므로 "확인 필요"로 둔다. M1-①은 이 사실과 무관하게 잠금을 푼다.
-- **Chromium JSONWriter의 `>`·`&` 비이스케이프**: 기억(`string_escape.cc` "Escape < to prevent script execution; escaping > is not necessary")에 근거한다. 어느 쪽이든 추정은 보수적이라 안전성에는 영향이 없고, M1의 과대 폭에만 영향을 준다.
-- **모바일 실기기 성능(R4)**: Firefox Android에서 실측하지 않았다. 데스크톱 수치로 추정했다.
-
----
-
-## 이전 PR #22(이슈 #16~#20) 리뷰 기록
-
-> **재리뷰·QA 기록(2026-10-05, 커밋 전):** N1(강조의 그리스어·보조평면 회귀)·N2(주석)·N3(문서)·INFO-1(항목 클릭 시에도 사이트 메뉴 닫기) 반영 → QA 재검증 PASS(실마크업 jsdom 10/10·오숨김 19/19, 실 Firefox 156 레이아웃 36/30/39·강조 12/12). QA minor m1(좁은 창 탭 보기 가로 넘침 → `body.fmkb-tab-view { max-width: 100% }`)·m2(에이전트/스킬 TODO 예시 문구) 반영 후 실 Firefox 레이아웃 재확인.
-> **PR #22 최종 독립 리뷰(2026-10-05, 푸시된 f7f0220 기준): MERGE, minor 3** — M1 `İ`+끝 `Σ` 조합에서 강조 누락 → 매칭은 전체 소문자, 위치 표만 코드포인트별 길이로 만들도록 수정 / M2 "모바일 목록 전용" 표현 잔존(계약·QA 에이전트·스킬 2곳·셀렉터 스킬 섹션 위치) → 정리 / M3 이 보고서에 재리뷰 기록 누락 → 이 단락 추가. 다섯 이슈(#16~#20) 모두 해결 확인(19개 캐시 페이지 jsdom 종단 검증).
+### 미검토
+- 실제 화면 낭독기(NVDA·JAWS·VoiceOver·TalkBack)에서의 낭독. 이번에는 AX 트리 수준까지만 확인했다.
+- 실 Firefox와 Safari의 마우스 클릭 포커스 동작. mousedown preventDefault로 흉내만 냈다. 리더의 실 Firefox 156 검증(라이브 31/31, 팝업 30/30, 터치 5/5)으로 보완된다.
+- 실 Firefox Android에서의 더블탭과 R6 띠. 실기기 게이트로 남는다.
