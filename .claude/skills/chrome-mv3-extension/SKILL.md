@@ -22,8 +22,11 @@ description: "FMK-Blind 크롬 확장의 Manifest V3 구조·규약. 무빌드(�
   "version": "x.y.z",
   "key": "…",                       // Chrome 확장 ID 고정(기기 간 sync 공유). Firefox는 무시
   "permissions": ["storage"],
-  "browser_specific_settings": { "gecko": { "id": "…", "strict_min_version": "115.0",
-    "data_collection_permissions": { "required": ["none"] } } },   // Firefox 전용. Chrome은 무시
+  "browser_specific_settings": { "gecko": { "id": "…", "strict_min_version": "140.0",
+    "data_collection_permissions": { "required": ["none"] } },
+    "gecko_android": { "strict_min_version": "142.0" } },   // Firefox 전용. Chrome은 무시
+  // 최소 버전 근거(이슈 #21): Firefox 127+부터 MV3 사이트 접근 권한이 설치 시 자동 부여되고,
+  // data_collection_permissions는 데스크톱 140 / Android 142부터 지원 → 그 아래는 설치해도 차단이 안 되거나 lint 경고
   "action": { "default_popup": "src/popup/popup.html", "default_icon": { "16": "…", "32": "…", "48": "…", "128": "…" } },
   "icons": { "16": "…", "32": "…", "48": "…", "128": "…" },
   "content_scripts": [{

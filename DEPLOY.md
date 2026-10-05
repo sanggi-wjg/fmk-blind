@@ -67,13 +67,13 @@ manifest의 고정 `key` 덕분에 확장 ID가 **`mnnofigckdchafggopgbjanmjmcbj
 1. `npx web-ext sign --channel=listed ...` 또는 [AMO](https://addons.mozilla.org/developers/)에 §0 zip 직접 업로드
 2. 등록 정보 작성 → 제출 → 검수(사람 리뷰 포함) → 게시, 자동 업데이트
 
-> ⚠️ 제출 전 manifest의 **`key`(Chrome 전용)는 제거 권장**. Firefox는 `key`를 무시하지만 `web-ext lint`가 경고를 낸다(§4).
+> ⚠️ 제출 전 manifest의 **`key`(Chrome 전용)는 제거 권장**. Firefox는 `key`를 무시하지만 로드할 때 "Warning processing key" 경고를 남긴다(§4). (현재 `web-ext lint`는 `key`로 경고를 내지 않는다 — 2026-10-05 확인)
 
 > ⚠️ **데이터 수집 고지 필수(2025-11-03부터)**: AMO 신규 등록은 manifest에
 > `browser_specific_settings.gecko.data_collection_permissions`가 없으면 검증 단계에서 거부된다
 > ("The data_collection_permissions property is missing"). FMK-Blind는 수집 데이터가 없으므로
 > `{ "required": ["none"] }`로 선언돼 있다(v0.6.1+). Firefox 140+(Android 142+)가 설치 시
-> 동의 UI에 반영하고, 그 미만 버전은 이 키를 무시한다(에러 아님).
+> 동의 UI에 반영한다. v0.8.1부터 최소 버전이 140/142라 항상 읽힌다(그 이전 버전 매니페스트에선 140 미만이 이 키를 무시했다).
 > 상세: https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/
 
 ### 2-4. Firefox for Android (모바일 `m.fmkorea.com`)
@@ -96,7 +96,7 @@ manifest의 고정 `key` 덕분에 확장 ID가 **`mnnofigckdchafggopgbjanmjmcbj
 ## 3. 도구: `web-ext` (Mozilla 공식 CLI)
 
 ```bash
-npx web-ext lint        # manifest·코드 검증 (key 경고 등 확인)
+npx web-ext lint        # manifest·코드 검증
 npx web-ext run         # Firefox를 띄워 확장 로드 (개발 핫리로드)
 npx web-ext build       # 배포용 zip 생성 (web-ext-artifacts/)
 npx web-ext sign --channel=unlisted|listed --api-key=… --api-secret=…  # AMO 서명
@@ -110,13 +110,14 @@ npx web-ext sign --channel=unlisted|listed --api-key=… --api-secret=…  # AMO
 
 | 키 | 역할 | Chrome | Firefox |
 |----|------|:---:|:---:|
-| `key` | 압축해제 확장 ID 고정 | 읽음 ✅ | 무시(`web-ext lint` 경고) |
-| `browser_specific_settings.gecko` | 확장 ID(`id`)·최소 버전(`strict_min_version`) | 무시(경고 로그) | 읽음 ✅ |
-| `…gecko.data_collection_permissions` | 데이터 수집 고지(AMO 신규 등록 필수, §2-3) | 무시 | 140+ 읽음 ✅ / 미만 무시 |
+| `key` | 압축해제 확장 ID 고정 | 읽음 ✅ | 무시(로드 시 경고 로그) |
+| `browser_specific_settings.gecko` / `gecko_android` | 확장 ID(`id`)·최소 버전(`strict_min_version`) | 무시(경고 로그) | 읽음 ✅ |
+| `…gecko.data_collection_permissions` | 데이터 수집 고지(AMO 신규 등록 필수, §2-3) | 무시 | 읽음 ✅(최소 버전 140/142 — v0.8.1+) |
 
-각 브라우저가 **상대 전용 키를 무시**하므로 **단일 `manifest.json`이 양쪽에서 로드**된다. 개발·개인용(압축해제/임시 로드)은 손댈 것이 없다. **AMO `listed` 제출 시에만** lint 경고 제거를 위해 `key`를 빼는 게 깔끔하다(Firefox 전용 빌드로 분기).
+각 브라우저가 **상대 전용 키를 무시**하므로 **단일 `manifest.json`이 양쪽에서 로드**된다. 개발·개인용(압축해제/임시 로드)은 손댈 것이 없다. **AMO `listed` 제출 시에만** 로드 경고 제거를 위해 `key`를 빼는 게 깔끔하다(Firefox 전용 빌드로 분기).
 
-현재 설정: `strict_min_version: "115.0"`(Firefox 115 ESR 이상), `data_collection_permissions: { "required": ["none"] }`(수집 데이터 없음 선언 — v0.6.1+).
+현재 설정: `gecko.strict_min_version: "140.0"`(Firefox 140 ESR 이상), `gecko_android.strict_min_version: "142.0"`, `data_collection_permissions: { "required": ["none"] }`(수집 데이터 없음 선언 — v0.6.1+).
+- 최소 버전 근거(v0.8.1, 이슈 #21): ① Firefox 127 미만은 MV3 content script의 사이트 접근 권한을 설치 시 자동 부여하지 않아, 설치해도 사용자가 확장 패널에서 허용하기 전엔 차단이 동작하지 않았다. ② `data_collection_permissions`는 데스크톱 140·Android 142부터 지원(그 아래 최소 버전이면 `web-ext lint`가 `KEY_FIREFOX(_ANDROID)_UNSUPPORTED_BY_MIN_VERSION` 경고).
 
 ---
 

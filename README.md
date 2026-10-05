@@ -18,6 +18,9 @@
 1. `about:debugging#/runtime/this-firefox` 접속
 2. **임시 부가 기능 로드** → 이 저장소의 `manifest.json` 선택
 
+> **Firefox 140 이상**(Android는 142 이상)이 필요하다(v0.8.1+). 그보다 낮은 버전은 설치가 거부된다(이슈 #21 — 127 미만은 사이트 접근 권한이 자동 부여되지 않아 설치해도 차단이 동작하지 않았음).
+> Firefox 115~139(Windows 7/8·구 macOS에 남는 ESR 115 포함)와 Android 142 미만은 **v0.8.0 릴리즈**를 계속 쓸 수 있다(이후 업데이트 없음). v0.8.0 릴리즈 파일은 서명되지 않은 zip이라 임시 로드나 자가 서명이 필요하다([`DEPLOY.md`](DEPLOY.md)). 115~126은 확장 패널에서 fmkorea 사이트 접근을 직접 허용해야 한다.
+> **차단이 전혀 동작하지 않으면**: `about:addons` → FMK-Blind → 권한에서 `www.fmkorea.com`·`m.fmkorea.com` 접근을 허용한다(127 미만에서 설치한 뒤 업그레이드했거나 사용자가 권한을 끈 경우 — 최소 버전 상향으로는 해결되지 않는다).
 > 임시 로드는 **Firefox를 재시작하면 사라진다**(테스트용). 영구 설치는 Mozilla 서명이 필요하다 → [`DEPLOY.md`](DEPLOY.md).
 
 ## 사용법
