@@ -4,6 +4,7 @@ FMK-Blind 차단 목록 저장 계층의 **공개 API 계약**. content script�
 이 문서는 storage-engineer가 소유하며, 변경 시 content-engineer·popup-engineer에게 재통지한다.
 
 - 상태: **6 API FROZEN(v1 시그니처 고정) + 가산적 7번째 선택 API `onChange`(2026-06-15) + 가산적 8번째 선택 API `importMany`(2026-07-08, 배치 가져오기 C10)**
+- **쓰기 안전성 재설계(2026-10-05, team-lead 대행 — storage-engineer 정지로 리더가 구현, 이슈 #13·#14·#15)**: 메모리 = 디스크 ⊕ 미저장 로컬 변경, 쓰기는 **읽기→병합→쓰기**. 저장 실패는 **reject(err.code) + 변경 되돌림**, load 읽기 실패는 reject(1회 재시도 후). **API 이름·인자·저장 레이아웃 불변**, 바뀐 것은 실패 시맨틱(C2·C3·C7·C10)과 내부 모델(C9·C11). 소비자는 block/unblock/importMany/load의 reject를 처리해야 한다(§4).
 - 스키마 버전: `bl_meta.ver = 1`
 - 작성: storage-engineer / 2026-06-14
 - MAJOR-1 수정(team-lead 지침 = 내부 보강만): 디바운스 쓰기를 `pagehide`·`visibilitychange(hidden)`에서 자동 flush(C8). **공개 API·6 시그니처 변경 없음**, 소비자 코드 변경 불필요.
@@ -51,8 +52,9 @@ window.FMKBlind.store = store;   // 아래 8개 메서드(FROZEN 6 + 가산 2: o
  */
 const store = {
   /**
-   * sync에서 메모리 맵을 복원한다. 앱 시작 시 최초 1회 반드시 await.
-   * 중복 호출은 안전(이미 로드됐으면 즉시 resolve). 실패해도 빈 맵으로 동작.
+   * sync에서 목록을 읽어 온다. 앱 시작 시 최초 1회 await. 중복 호출 안전(성공한 load는 캐시).
+   * 읽기는 1회 재시도하고, 그래도 실패하면 **reject**(err.code = 'READ_FAILED' | 'CONTEXT_INVALIDATED').
+   * 실패한 load는 캐시하지 않으므로 다시 호출하면 재시도한다(2026-10-05, 이슈 #14).
    * @returns {Promise<void>}
    */
   async load() {},
@@ -68,19 +70,20 @@ const store = {
    * 차단 추가 + 즉시 영속화. addedAt은 호출 시각(ms epoch).
    * 이미 있으면 중복 추가하지 않되 nick은 최신값으로 갱신(addedAt 유지).
    * 메모리는 반환 전 즉시 반영 → isBlocked(uid)가 곧바로 true.
-   * **반환 Promise는 chrome.storage.sync 쓰기 완료 시 resolve**(C3). await하면 sync 반영 보장.
+   * **반환 Promise는 chrome.storage.sync 쓰기 완료 시 resolve**(C3). 이미 같은 nick으로 차단돼 있으면 쓰기 없이 resolve.
+   * 저장에 실패하면 메모리 변경을 되돌리고 **reject**(err.code — C7). 
    * @param {string} uid
    * @param {string} nick  표시용 닉네임(없으면 빈 문자열 허용)
-   * @returns {Promise<void>}  resolve = sync 영속화 완료
+   * @returns {Promise<void>}  resolve = sync 영속화 완료 / reject = 저장 실패(되돌려짐)
    */
   async block(uid, nick) {},
 
   /**
    * 차단 해제 + 즉시 영속화. 없으면 무시(no-op → 즉시 Promise.resolve()).
    * 메모리는 반환 전 즉시 반영 → isBlocked(uid)가 곧바로 false.
-   * **반환 Promise는 chrome.storage.sync 쓰기 완료 시 resolve**(C3). 팝업이 await 후 닫혀도 유실 없음.
+   * **반환 Promise는 chrome.storage.sync 쓰기 완료 시 resolve**(C3). 저장 실패 시 되돌리고 reject(C7).
    * @param {string} uid
-   * @returns {Promise<void>}  resolve = sync 영속화 완료(삭제 대상 없으면 즉시 resolve)
+   * @returns {Promise<void>}  resolve = sync 영속화 완료(삭제 대상 없으면 즉시 resolve) / reject = 저장 실패
    */
   async unblock(uid) {},
 
@@ -99,10 +102,11 @@ const store = {
 
   /**
    * (가산적 7번째 선택 API — 2026-06-15) 외부 sync 변경(다른 탭/팝업/기기) 라이브 구독.
-   * chrome.storage.onChanged 발생 시 **외부 델타만** 메모리 맵에 reconcile(로컬 미영속 항목 보존)하고
-   * 외부 변경분에 한해 diff를 통지.
+   * chrome.storage.onChanged(및 bfcache 복원·탭 복귀) 시 저장소를 다시 읽어 메모리 = 디스크 ⊕ 미저장 로컬 변경으로
+   * 재계산하고, 이전 대비 키 diff를 통지한다. **저장 실패로 되돌린 변경도 diff로 통지**된다(2026-10-05).
+   * 자기 변경이 성공한 경우엔 통지하지 않는다.
    * cb 시그니처: ({ added: string[], removed: string[] }) => void  (uid 문자열 배열)
-   *   · added: 외부에서 새로 차단된 uid · removed: 외부에서 해제된 uid
+   *   · added: 새로 차단된 uid(외부 변경 또는 해제 실패 되돌림) · removed: 해제된 uid(외부 변경 또는 차단 실패 되돌림)
    *   · 값만 바뀌고 키셋 동일하면 added/removed 모두 빈 배열 → 콜백 호출 생략(자기-쓰기 에코 no-op 포함).
    * 다중 구독 지원. 한 콜백의 예외는 격리(다른 구독자/스토어 불영향).
    * onChanged 미지원 컨텍스트에서는 콜백이 호출되지 않을 뿐 등록/해제는 정상.
@@ -113,7 +117,10 @@ const store = {
 
   /**
    * (가산적 8번째 선택 API — 2026-07-08) 차단 목록 **배치 가져오기(import)**.
-   * 내보낸 JSON(팝업이 list() 결과를 직렬화한 것)을 대량으로 메모리에 일괄 반영한 뒤 **1회 직렬 flush**한다.
+   * 내보낸 JSON(팝업이 list() 결과를 직렬화한 것)을 대량으로 메모리에 일괄 반영한 뒤 **1회 쓰기**로 저장한다.
+   * **메모리를 바꾸기 전에** 가져온 뒤의 예상 용량을 재서 한도를 넘으면 아무것도 바꾸지 않고
+   * reject(err.code = 'QUOTA', err.fit = 대략 더 저장할 수 있는 인원). 부분 가져오기 없음(2026-10-05, 이슈 #13).
+   * nick은 64자로 자른다.
    * 항목별 block() 남발을 피해 sync 레이트리밋(분당 120/시간당 1,800) 압박을 줄인다(TODO Q7).
    *
    * 머지 시맨틱(C10):
@@ -123,6 +130,7 @@ const store = {
    *   uid는 C1대로 String(uid)로 정규화 후 검증. items가 배열이 아니면 no-op(경고 + 0/0/0 resolve).
    *
    * 반환 Promise resolve = **chrome.storage.sync 쓰기 완료**(C3 준용). added가 0이면 쓰기 없이 즉시 resolve(멱등).
+   * 쓰기 실패 시 추가분을 되돌리고 reject(err.code — C7).
    * @param {Array<{uid: string|number, nick?: string, addedAt?: number}>} items
    * @returns {Promise<{added: number, skipped: number, invalid: number}>}
    */
@@ -132,6 +140,7 @@ const store = {
 
 > 내구성은 **공개 API가 아니라 store 내부**에서 보장한다(§3 C3). 소비자는 추가 호출 없이
 > 기존 `await block`/`await unblock`만 사용하면 되고, await 완료가 곧 sync 영속 완료다.
+> **2026-10-05부터 소비자는 reject를 반드시 처리**한다(실패를 성공으로 보이지 않게 — C7, §4).
 > (구 C8 언로드 자동 flush는 resurrection 원인이라 2026-06-15 제거 — 아래 C8 참고.)
 
 ---
@@ -141,15 +150,16 @@ const store = {
 | # | 보증 | 의미 |
 |---|------|------|
 | C1 | `uid` 타입 | 모든 메서드에서 **문자열**. 호출 측도 문자열로 전달(숫자 전달 금지). |
-| C2 | `load()` 선행 | 조회/변경 전에 1회 await. 미호출 시 빈 맵으로 동작(에러 아님). |
-| C3 | 즉시성 + 영속화 완료(2026-06-15 갱신) | `block`/`unblock`은 **반환 전(동기)** 메모리를 갱신 → `isBlocked`·`list`·`count`가 즉시 정확. **반환 Promise는 chrome.storage.sync 쓰기가 완료(또는 동기 디스패치)된 뒤 resolve**. 따라서 `await block/unblock` 후에는 sync 영속이 보장된다(단수명 팝업 종료에도 유실 없음). persist는 직렬화(in-flight 체인 + coalesce)되어 연속 호출에도 최종 상태·내부 스냅샷이 일관. 레이트리밋(분당 120/시간당 1,800) 초과 시 C7 경로(경고+디바운스 재시도)로 폴백. |
+| C2 | `load()` 선행 | 조회/변경 전에 1회 await. 미호출 시 빈 맵으로 동작(에러 아님). **읽기 실패는 1회 재시도 후 reject(READ_FAILED), 실패한 load는 캐시하지 않음**(2026-10-05). load 전이나 실패 후의 쓰기도 C11(읽은 뒤 병합)이라 저장된 목록을 덮어쓰지 않는다. |
+| C3 | 즉시성 + 영속화 완료(2026-10-05 갱신) | `block`/`unblock`/`importMany`는 **반환 전(동기)** 메모리를 갱신 → `isBlocked`·`list`·`count`가 즉시 정확. **반환 Promise는 chrome.storage.sync 쓰기가 완료된 뒤 resolve**, 저장 실패 시 reject(C7). 쓰기는 직렬화 큐에서 실행되며 아직 시작하지 않은 실행이 있으면 거기에 함께 실린다(coalesce). ⚠️ C11 때문에 쓰기 전에 읽기가 먼저 일어나므로 **sync.set이 클릭 태스크 안에서 바로 디스패치되지는 않는다**(수 ms 뒤). 팝업에서 해제 후 그 사이에 팝업을 닫으면 유실될 수 있으나, 사람이 클릭 직후 수 ms 안에 닫는 경우는 현실적이지 않다(모의 테스트: 25ms 뒤 닫아도 저장됨 — 실제 툴바 팝업에서는 미검증). |
 | C4 | 멱등 block | 같은 uid 재차단은 중복 추가 없음. nick만 갱신, addedAt 보존. |
 | C5 | 안전 unblock | 없는 uid 해제는 no-op(에러 없음). |
 | C6 | list 정렬/불변 | addedAt desc. 반환은 복사본. |
-| C7 | 영속화 실패 내성 | sync.set 실패해도 throw 안 함 — 메모리 유지 + 콘솔 경고 + `schedulePersist`(디바운스) 재시도. |
-| C8 | ~~내구성(MAJOR-1 언로드 flush)~~ **제거됨(2026-06-15)** | 과거: `pagehide`/`visibilitychange(hidden)`에서 디바운스 보류 쓰기를 자동 flush. **현재 제거.** 사유: C3 즉시-영속화로 비울 보류 쓰기가 없어졌고, 이 flush가 **stale 탭의 옛 맵을 새로고침 시 sync에 되써 해제를 무효화(resurrection)**하는 통로였다(실 Chrome 직렬화 차이로 청크 diff 거짓 양성). 내구성은 C3(즉시 쓰기 동기 디스패치)가 대체. |
-| C9 | 라이브 동기(2026-06-15 추가, **reconcile로 정정**) | `chrome.storage.onChanged`(sync 영역, `bl_*`/`bl_meta` 변경)에서 **외부 델타만 메모리 맵에 reconcile**하고 외부 변경분에 한해 diff(`{added,removed}`)를 `onChange` 구독자에게 통지한다. 델타 = (현재 디스크) vs (우리가 마지막에 안 디스크 스냅샷 `persistedChunks`=prevMap): prev엔 있고 디스크엔 없으면 제거, 디스크에 새로/다르게 있으면 반영. **prevMap에도 디스크에도 없는 로컬 미영속 항목은 손대지 않아 보존**된다. 핸들러는 **읽기+메모리 갱신만**(절대 sync write 안 함) → 피드백 루프 없음. persist와 **하나의 직렬화 큐**에서 순차 실행되어 인터리브 없음. 자기-쓰기 에코는 델타가 비어 no-op·멱등. reconcile 후 `persistedChunks`를 디스크 권위로 정합 → 직후 로컬 persist가 미영속 항목을 변경분으로 올바로 기록. 이로써 **(a) 잔여 엣지 I2**(해제 후 되살림)와 **(b) 마이크로태스크 경쟁**(외부 rebuild의 syncGet await 중 들어온 미영속 로컬 `block`을 옛 clobber가 유실·오통지하던 결함)을 **함께 닫는다**. 미지원 컨텍스트면 비활성(나머지 동작 정상). 남는 한계: 외부 변경과 로컬 변경이 **같은 uid**를 동시 갱신하면 last-writer 수렴(eventual consistency 정상). |
-| C10 | 배치 가져오기(2026-07-08 추가, **C3 준용**) | `importMany(items)`는 items를 순회하며 **메모리 맵에 일괄 반영**(새 uid 추가·기존 uid 스킵·비정상 invalid 카운트)한 뒤 **flushPending() 1회**로 변경분을 직렬 persist한다(항목별 block()처럼 여러 번 쓰지 않음 → 레이트리밋 압박 완화). 반환 Promise resolve = **sync 쓰기 완료**(C3와 동일 경로·의미). **added가 0이면(빈 배열·전량 중복·전량 invalid·비배열) 쓰기 없이 즉시 resolve**(멱등). uid는 C1대로 String 정규화 후 `^\d+$` 검증(비숫자열=invalid), 기존 uid는 C4 정신을 확장해 nick/addedAt도 **덮지 않고 스킵**. import된 미영속 항목은 C9 reconcile 관점에서 로컬 `block` 항목과 **동형**(prevMap·디스크에 없는 로컬 미영속) → flush 대기 중 외부 onChanged가 끼어들어도 보존된다(메모리는 동기적으로 이미 반영됨). 용량: 사전 추정 초과 시 콘솔 경고(차단하지 않음 — best-effort), 실제 쓰기 때 C-quota(persistOnce의 `QUOTA_WARN`) 경로가 재검증. |
+| C7 | 영속화 실패 = reject + 되돌림(2026-10-05 재정의, 이슈 #13) | 실패를 숨기지 않는다. 오류 분류: **비재시도** `QUOTA`(용량·항목 수 초과 — 쓰기 전 사전 검사로 대부분 걸러 set을 호출하지 않음), `CONTEXT_INVALIDATED`(확장 업데이트·재로드 뒤 남은 content script — `runtime.id` 소실 또는 'context invalidated' 메시지), `SCHEMA_NEWER`(저장소의 `bl_meta.ver`가 이 버전보다 높음 — `ver`는 항상 **숫자**로 쓴다(문자열도 `Number()`로 비교) — 더 새 버전이 다른 형식으로 저장한 데이터를 덮어쓰지 않도록 쓰기 거부, 소비자는 "확장 업데이트" 안내). **재시도** 그 밖의 모든 오류(레이트리밋 `MAX_WRITE_OPERATIONS_*` 포함)는 1s·2s·4s 백오프로 최대 3회 재시도 후 `WRITE_FAILED`. 최종 실패 시 그 실행에 실린 변경을 미저장 목록에서 빼고 메모리를 되돌린 뒤(구독자에 diff 통지) Promise를 `err.code`와 함께 reject. 무한 재시도·백그라운드 재시도 없음. |
+| C8 | ~~내구성(MAJOR-1 언로드 flush)~~ **제거됨(2026-06-15)** | 과거: `pagehide`/`visibilitychange(hidden)`에서 디바운스 보류 쓰기를 자동 flush. **현재 제거.** 사유: C3 즉시-영속화로 비울 보류 쓰기가 없어졌고, 이 flush가 **stale 탭의 옛 맵을 새로고침 시 sync에 되써 해제를 무효화(resurrection)**하는 통로였다(실 Chrome 직렬화 차이로 청크 diff 거짓 양성). 내구성은 C3(resolve = 쓰기 완료)가 대체. ※ 2026-10-05부터는 C11의 읽기가 먼저라 쓰기가 클릭 태스크 안에서 바로 디스패치되지는 않는다(C3 참고). |
+| C9 | 라이브 동기(2026-10-05 재구현) | `chrome.storage.onChanged`(sync 영역, `bl_*`/`bl_meta`) 또는 `pageshow`(bfcache 복원)·`visibilitychange`(visible) 시 직렬화 큐에서 저장소를 다시 읽어 disk를 갱신하고, 메모리 = disk ⊕ 미저장 로컬 변경으로 재계산해 이전 대비 키 diff를 통지한다. 미저장 로컬 변경은 디스크와 무관하게 유지되므로 보존된다. 핸들러는 읽기 전용(쓰기 없음) → 피드백 루프 없음. 자기 쓰기 에코는 diff가 비어 no-op. 이벤트를 놓친 탭도 다음 쓰기가 C11로 최신 디스크를 읽으므로 다른 곳의 변경을 덮어쓰지 않는다(이슈 #15). |
+| C10 | 배치 가져오기(2026-10-05 갱신) | `importMany(items)`: 새 uid 추가(nick 64자 절단, addedAt 결측/비정상이면 현재 시각)·기존 uid 스킵(파일 안 중복도 스킵 — 판정은 이 컨텍스트의 메모리 기준이라, 아직 반영 못 한 다른 기기의 항목은 '추가'로 세어 그 nick/addedAt으로 덮일 수 있다. 팝업은 load 완료 전 가져오기를 막는다)·비정상 invalid. **메모리를 바꾸기 전에** 가져온 뒤의 용량을 C11과 같은 방식으로 재서 넘으면 아무것도 바꾸지 않고 reject(`QUOTA`, `err.fit`=대략 더 넣을 수 있는 인원). 통과하면 미저장 변경으로 올린 뒤 **1회 쓰기**(쓰기 시점의 최신 디스크 기준 사전 검사에서 걸리면 `err.fit` 없이 QUOTA일 수 있음). resolve = 저장 완료, 실패 시 추가분 되돌리고 reject(C7). added 0이면 쓰기 없이 resolve. |
+| C11 | 읽기→병합→쓰기(2026-10-05 신설, 이슈 #14·#15) | 메모리 = disk(마지막으로 읽은 저장소) ⊕ pending(미저장 로컬 변경, uid별 add/del + seq). 쓰기 실행은 직렬화 큐 안에서 ① `get(null)`로 저장소를 새로 읽고(**읽기 실패면 쓰지 않음**) ② 그 위에 pending을 얹어 ③ 디스크 순서를 유지한 채(새 uid는 뒤에) 청크를 만들고 ④ Chrome 방식 용량 계산(키+JSON UTF-8, `<`·U+2028/9·따옴표 밖 큰 정수(`.0`) 보정, 청크 7168B·전체 102400B·키 512개)으로 검사한 뒤 ⑤ **바뀐 청크만** set(디스크·새 청크 모두 `{addedAt, nick}` 레코드로 정규화해 비교 — 디스크 키 순서와 무관하게 안 바뀐 청크는 다시 쓰지 않음). 남는 청크는 **같은 set에서 빈 배열로 비워** 한 번에 원자적으로 반영하고 ⑥ 키 remove는 정리용(실패해도 무해). ④의 용량 검사는 **목록이 커지는 쓰기에만** 적용한다(디스크 현재 크기 추정보다 커질 때) — 추정이 근사치라 브라우저가 받아 준 한도 근처 목록의 해제까지 막으면 안 되기 때문(리뷰 M1). 성공하면 실린 변경 중 seq가 그대로인 것만 pending에서 뺀다(그사이 같은 uid의 새 변경은 남음). **남은 한계**: ① 두 컨텍스트/기기가 같은 읽기→쓰기 사이(같은 브라우저에선 수 ms, 기기 간에는 sync 전파 전)에 쓰면 Chrome sync의 키(청크) 단위 last-writer-wins로 겹친 청크의 다른 변경이 사라질 수 있다(앞쪽 해제는 뒤 청크들을 다시 써서 여러 명이 걸릴 수 있음 — 해소하려면 저장 레이아웃 변경 필요). ② 한 번의 쓰기 실행에 함께 실린 변경은 함께 성공·실패한다 — 대기열이 밀린 사이(재시도 백오프 등) 같은 실행에 묶인 해제가, 한도를 넘는 차단과 함께 QUOTA로 거절될 수 있다(해제만 다시 하면 성공). ③ 예전 버전이 저장한 청크 예산(7168B) 초과 항목은 새로 넣지는 못하지만, 이미 있으면 크기 추정과 무관하게 혼자 청크를 쓰게 두고 최종 판단은 브라우저에 맡긴다(추정은 근사치 — Firefox는 `<`를 이스케이프하지 않아 Chrome 추정보다 작게 센다). ④ 이 보호는 **모든 기기·탭이 0.8.0 이상**일 때만 성립한다(0.7.x는 읽지 않고 쓴다). ⑤ 용량 추정은 Chrome 방식(int32 밖 정수에 ".0")이라 Firefox(".0" 없음)에서는 항목당 2B 크게 잡혀, 커지는 쓰기가 실제 한도보다 약 3% 일찍 QUOTA가 된다(데이터 손실 없음, 실 Firefox 156 확인). |
 
 ---
 
@@ -157,10 +167,15 @@ const store = {
 
 ### content-engineer (20·40·99)
 ```js
-await FMKBlind.store.load();              // 99-main.js 진입점에서 1회
+try { await FMKBlind.store.load(); }     // 99-main.js 진입점에서 1회
+catch (e) { /* READ_FAILED 등 → 차단 없이 정상 노출, 탭 복귀·5초 뒤 재시도(최대 3번). CONTEXT_INVALIDATED면 재시도 안 함 */ }
 if (FMKBlind.store.isBlocked(uid)) { /* 숨김 */ }   // 동기 조회로 스캔
-await FMKBlind.store.block(uid, nick);    // 우클릭 차단
-await FMKBlind.store.unblock(uid);        // 우클릭 해제
+try {
+  await FMKBlind.store.block(uid, nick);  // 우클릭 차단 — resolve 뒤에 숨김·성공 토스트
+} catch (e) {
+  // e.code: 'CONTEXT_INVALIDATED'(새로고침 안내) | 'QUOTA'(목록 정리 안내) | 'SCHEMA_NEWER'(확장 업데이트 안내) | 'WRITE_FAILED'(잠시 후 재시도)
+  // store가 이미 되돌렸으므로 숨기지 않고 실패 토스트만. unblock도 동일.
+}
 // UID 없는 목록(모바일 목록·PC 위젯형 목록) 닉네임 폴백(2026-10-05, 이슈 #8·#16 — 기존 API 재사용, 계약 무변경):
 // list()의 nick으로 '정규화 닉 → uid' 색인을 만들고 block/unblock/onChange 때 무효화·재구성.
 FMKBlind.store.list().forEach(function (it) { /* nickIndex.set(normalizeNick(it.nick), it.uid) */ });
@@ -178,11 +193,10 @@ FMKBlind.store.onChange(function (d) {
 
 ### popup-engineer (popup.js)
 ```js
-await FMKBlind.store.load();              // 팝업 열릴 때 1회
+await FMKBlind.store.load();              // 팝업 열릴 때 1회 — reject면 빈 목록을 보이지 말고 오류 상태로 멈춤
 const items = FMKBlind.store.list();      // [{uid,nick,addedAt}] desc → 렌더
 const n = FMKBlind.store.count();         // 인원수 표시
-await FMKBlind.store.unblock(uid);        // 해제 버튼 → await 완료 = sync 영속 완료, 이후 list()/count() 재호출로 갱신
-// 추가 호출 불필요 — await만으로 sync 반영 보장(팝업이 그 뒤 닫혀도 안전).
+await FMKBlind.store.unblock(uid);        // 해제 버튼 → resolve = sync 영속 완료 / reject = 실패(되돌려짐) → 오류 표시 + 재렌더
 
 // 라이브 동기(선택·저비용): 팝업이 열린 채 탭에서 우클릭 차단/해제 시 목록/카운트 자동 재렌더.
 FMKBlind.store.onChange(function () { render(FMKBlind.store.list(), FMKBlind.store.count()); });
@@ -201,10 +215,10 @@ const payload = JSON.stringify({
 // popup은 { entries: [...] }(위 포맷) 외에 bare 배열·구버전 { items: [...] }도 관용 수용한다.
 const parsed = JSON.parse(fileText);
 const entries = Array.isArray(parsed) ? parsed : (parsed && (parsed.entries || parsed.items)) || [];
-const r = await FMKBlind.store.importMany(entries);  // await 완료 = sync 영속 완료(C10)
+const r = await FMKBlind.store.importMany(entries);  // resolve = sync 영속 완료 / reject: e.code==='QUOTA'면 e.fit 안내(C10)
 // r = { added, skipped, invalid } → "N명 추가, M명 중복 건너뜀, K건 무시" 토스트/요약 표시
 render(FMKBlind.store.list(), FMKBlind.store.count());  // 목록·카운트 갱신
-// 주의: importMany는 throw하지 않는다(비정상 항목은 invalid로 집계). JSON.parse 실패만 팝업이 try/catch.
+// 주의: 비정상 항목은 invalid로 집계(throw 아님). 용량 초과·저장 실패는 reject(C7·C10) → 팝업이 catch해 안내.
 ```
 
 > **영속화 버그 수정(2026-06-15)**: `block`/`unblock`이 이제 즉시·awaitable 영속화한다 — `await unblock(uid)`가 끝나면
@@ -212,6 +226,7 @@ render(FMKBlind.store.list(), FMKBlind.store.count());  // 목록·카운트 갱
 > 팝업이 500ms 내 닫히면 유실되던 버그). 소비자는 여전히 기존 `await unblock`/`await block`만 쓰면 된다(시그니처·호출법 불변).
 > ⚠️ **C8 언로드 flush는 제거됨**(잔존 안전망이 아니라 resurrection 원인이었음 — §3 C8 참고).
 
+> ⚠️ 아래 두 단락은 2026-06-15 당시 기록이다. `persistedChunks` 스냅샷·reconcile 모델은 **2026-10-05 C11(읽기→병합→쓰기, 메모리 = disk ⊕ pending)로 대체**됐다 — 현재 동작은 §3 C9·C11 참고.
 > 라이브 동기(2026-06-15 구현, C9): 팝업/다른 탭/다른 기기의 변경이 **이미 열린 fmkorea 탭에 새로고침 없이 즉시 반영**된다(`chrome.storage.onChanged`). content가 `onChange`로 현재 DOM을 즉시 숨김/복구하고, store는 메모리 맵 + `persistedChunks` 스냅샷을 스토리지 권위로 정합한다.
 > **잔여 엣지 I2 해소 + 경쟁 수정(reconcile)**: "팝업 해제 직후 같은 탭에서 새로고침 없이 또 다른 사용자를 차단" 시, onChanged가 먼저 해제를 탭에 reconcile하며 `persistedChunks`를 fresh 스냅샷으로 정합하므로, 이어진 로컬 `block`이 fresh 스냅샷에 diff → 해제된 청크를 되쓰지 않는다(I2 닫힘). 또한 외부 onChanged의 syncGet await 중 들어온 **미영속 로컬 `block`은 reconcile가 외부 델타만 적용**하므로 보존된다(옛 clobber/`map.clear`가 유실·오통지하던 마이크로태스크 경쟁 수정).
 > 남은 한계: ① 새 DOM(AJAX/무한스크롤)은 새로고침 시 반영(MutationObserver는 별개 TODO). ② 외부·로컬이 **같은 uid**를 동시 갱신하면 last-writer로 수렴(eventual consistency — 정상).
@@ -221,14 +236,12 @@ render(FMKBlind.store.list(), FMKBlind.store.count());  // 목록·카운트 갱
 ## 5. 내부 저장 레이아웃 (소비자는 몰라도 됨 — 참고용)
 
 - `bl_meta = { ver: 1 }` — 스키마 버전.
-- `bl_0`, `bl_1`, … `bl_N` — 직렬화 차단 목록을 ~7.5KB(8KB 안전마진) 청크로 분할.
-- 메모리: `Map<uidString, { nick, addedAt }>`.
-- 변경된 청크만 `sync.set`, 청크 수 감소 시 남는 `bl_{k}` `sync.remove`(유령 데이터 방지).
-- **persist + onChanged 직렬화(C9)**: persist(로컬 write)와 onChanged-reconcile(외부 변경)를 **하나의 직렬화 큐(tail Promise 체인 `serialTail`/`enqueueSerial`)**에 함께 태운다. 한 번에 하나의 `persistOnce`만 실행되고(in-flight + dirty coalesce), 외부 reconcile는 진행 중 로컬 write **커밋 뒤** 실행되어 둘이 인터리브되지 않는다 → `persistedChunks` 스냅샷 경쟁 없음. 핸들러는 읽기+메모리 갱신만(sync write 안 함)이라 피드백 루프 없음.
-- **onChanged 핸들러(`applyExternalChange`, reconcile)**: sync 영역의 `bl_*`(숫자)/`bl_meta` 변경 시 디스크를 읽어 **(디스크 vs `persistedChunks`=prevMap) 외부 델타만** 메모리 맵에 적용(추가/변경 set·외부제거 delete)하고, 로컬 미영속 항목은 보존한다. 이후 `persistedChunks`를 디스크 권위로 정합. 외부 변경분에 한해 diff 통지. 자기-쓰기 에코는 델타가 비어 무해. `load()`는 별도 `rebuildFromStorage()`(clobber, 최초 로드 전용 — 로컬 상태 없음)를 쓰며, 둘은 순수 파서 `parseSnapshot()`을 공유. 미지원 컨텍스트는 리스너 미등록(가드).
-- **즉시쓰기 + 디바운스 폴백(2026-06-15)**: `block`/`unblock`은 즉시 직렬 persist(`flushPending`). sync 쓰기 실패(레이트리밋 분당 120/시간당 1,800 초과 등)는 `persistOnce` catch에서 흡수 → 경고 + `schedulePersist`(500ms 디바운스) 재시도. 수동 차단/해제 빈도에선 한도 무해. 디바운스(`schedulePersist`)는 이제 **실패 재시도 경로에서만** 사용(언로드 자동 flush는 제거).
-- **언로드 flush 제거(2026-06-15, C8 폐지)**: 과거 `pagehide`/`visibilitychange(hidden)`에서 보류 쓰기를 flush했으나, 즉시쓰기 전환 후엔 비울 보류 쓰기가 없고 **stale 탭이 새로고침 시 옛 맵을 되써 해제를 무효화하는 통로**였다 → 제거. content/popup 어느 컨텍스트에도 언로드 리스너를 등록하지 않는다.
-- 100KB 임박 시 콘솔 경고(압축은 TODO).
+- `bl_0`, `bl_1`, … `bl_N` — 차단 목록 `[[uid, { addedAt, nick }], ...]`을 7168B(Chrome 방식 계산) 이하 청크로 분할. 레코드는 키 정렬 순서로 쓴다(Chrome이 읽기 결과를 키 정렬해 돌려주므로 비교가 안정적). 옛 `{ nick, addedAt }` 순서·문자열 청크·메타 없음도 그대로 읽는다.
+- 메모리: `disk`(마지막으로 읽은 저장소, 저장 순서 유지) + `pending`(uid → add/del + seq) → 공개 조회용 `map` = disk ⊕ pending (C11).
+- 직렬화 큐(`serialTail`/`enqueueSerial`): 쓰기 실행(`persistRun`)과 외부 변경 반영(`scheduleRefresh`)이 한 체인에서 순서대로 돈다. 아직 시작하지 않은 쓰기 실행(`queuedRun`)에 이후 변경이 함께 실린다.
+- 쓰기 실행: 읽기 → 병합 → 용량 검사(커지는 쓰기만) → 바뀐 청크 set(남는 청크는 같은 set에서 `[]`로 비움) → 남는 키 remove(실패해도 경고만). 실패 분류·재시도·되돌림은 C7.
+- 언로드 자동 flush 없음(구 C8 폐지 유지). `pageshow`(persisted)·`visibilitychange`(visible)는 **읽기 전용 refresh**만 한다.
+- 90% 임박 시 콘솔 경고. 목록이 커지는 쓰기가 한도를 넘으면 쓰기 전에 QUOTA로 거절, 줄이는 쓰기는 브라우저에 맡김(압축은 TODO).
 
 ---
 
@@ -239,5 +252,6 @@ render(FMKBlind.store.list(), FMKBlind.store.count());  // 목록·카운트 갱
 3. 스키마 변경이면 `bl_meta.ver`를 올리고 마이그레이션 경로를 store.js에 추가.
 
 **구현됨(2026-06-15):** `chrome.storage.onChanged` 라이브 동기(7번째 API `onChange` + C9).
+**구현됨(2026-10-05):** 쓰기 안전성 재설계(C2·C3·C7·C9·C10 갱신, C11 신설 — 이슈 #13·#14·#15).
 **구현됨(2026-07-08):** 내보내기/가져오기(TODO Q7) — 내보내기는 `list()` 직렬화로 팝업이 처리(새 API 없음), 가져오기는 8번째 API `importMany` + C10.
 **범위 밖(구현 금지):** 압축.

@@ -12,7 +12,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 1. store(`src/content/10-store.js`) 구현 — 메모리 맵 `{ uid: {nick, addedAt} }` + sync 영속화
 2. 샤딩 로직 — `bl_meta`(스키마 버전) + `bl_0..N`(8KB 청크), 총 100KB·항목당 8KB 제약 준수
 3. **API 계약 공표** — 6 API FROZEN(`load/isBlocked/block/unblock/list/count`) + 가산 `onChange`(C9 라이브 동기 reconcile) + `importMany`(C10 배치 가져오기)의 시그니처·불변식을 content/popup-engineer에게 명확히 전달. 새 API는 **가산적**으로만 추가(기존 시그니처 변경 금지)
-4. 청크 정리(stale `bl_{k}` remove), **즉시 영속화(awaitable)** + 실패 시에만 디바운스 재시도(분당 120/시간당 1,800 보호), persist·onChanged reconcile 단일 직렬화 큐 유지. **언로드 자동 flush(`pagehide`/`visibilitychange`)는 두지 않는다**(stale 탭 resurrection 원인)
+4. 청크 정리(stale `bl_{k}` remove), **읽기→병합→쓰기 영속화(awaitable)**(메모리 = disk ⊕ pending, 읽기 실패 시 쓰지 않음), 쓰기·refresh 단일 직렬화 큐 유지(계약 C11). **언로드 자동 flush(`pagehide`/`visibilitychange`)는 두지 않는다**(stale 탭 resurrection 원인)
 
 ## 작업 원칙
 - `sync-sharded-storage` 스킬을 Skill 도구 또는 Read로 로드해 설계 표준을 따른다
@@ -32,7 +32,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 - **직접 모드(이름 없는 1회 호출)**: SendMessage/TaskUpdate를 쓰지 않는다. 결과는 리포트 파일과 최종 응답으로 **리더에게만** 보고한다(리더가 수정·재할당을 결정)
 
 ## 에러 핸들링
-- sync 쓰기 실패(할당량 초과 등): 콘솔 경고 + 메모리 상태는 유지, 디바운스 재시도 경로로 재시도. 100KB 임박 시 경고 노출
+- sync 쓰기 실패: QUOTA·CONTEXT_INVALIDATED는 재시도 없이, 그 밖은 1s·2s·4s 백오프 후 — 변경을 되돌리고 `err.code`와 함께 reject(계약 C7). 실패를 성공으로 보이지 않게 하고 무한 재시도 금지. 용량은 쓰기 전에 Chrome 방식으로 검사
 - 손상된 청크: 파싱 실패 청크는 건너뛰고 나머지로 복원, 경고 로그
 
 ## 협업

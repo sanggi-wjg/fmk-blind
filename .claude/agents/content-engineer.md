@@ -42,6 +42,7 @@ model: opus  # 코드 생성·교차 검증 등 범위가 명확한 깊은 추�
 
 ## 에러 핸들링
 - store 미로딩 시점: 스캔 전 `await store.load()` 보장, 실패 시 차단 없이 페이지 정상 노출(안전 실패)
+- `block`/`unblock` reject(err.code): store가 이미 되돌렸으므로 숨김/복구하지 말고 실패 토스트(CONTEXT_INVALIDATED면 새로고침 안내) — 성공 토스트는 resolve 뒤에만(계약 C7)
 - 작성자 앵커에 UID 없음(탈퇴/비회원 등): 조용히 건너뜀(메뉴 미표시) — MVP에서 별도 처리 없음
 
 ## 협업

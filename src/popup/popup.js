@@ -15,8 +15,8 @@
  *
  * 내보내기/가져오기(2026-07-08, TODO Q7): 내보내기는 새 API 불필요 — list() 복사본을
  *   JSON으로 직렬화해 Blob 다운로드(권한 추가 없음). 가져오기는 파일을 파싱해 importMany로
- *   1회 배치 반영(항목별 block 금지 — 레이트리밋). importMany는 throw하지 않고
- *   {added,skipped,invalid}를 반환하며 반환 Promise resolve = sync 영속 완료(C10).
+ *   1회 배치 반영(항목별 block 금지 — 레이트리밋). importMany는 {added,skipped,invalid}로 resolve
+ *   (= sync 영속 완료)하고, 용량 초과·저장 실패면 reject한다(C10 — 아래 catch에서 안내).
  *   가져오기는 '자기-쓰기'라 onChange 에코가 없으므로(계약 C9) 콜백에 의존하지 않고
  *   명시적으로 refresh()를 호출해 목록·인원수를 갱신한다.
  *
@@ -24,9 +24,9 @@
  *   않는다. 그래서 Firefox 팝업의 가져오기는 같은 popup.html 을 일반 탭(?view=tab&action=import)으로
  *   열고, 파일 선택·importMany 는 그 탭에서 한다. Chrome 팝업은 기존대로 파일 입력을 직접 연다.
  *
- * 영속화 보장(계약 C3, 2026-06-15 갱신): store.unblock/block은 sync 쓰기가 완료된 뒤
- *   resolve한다. 따라서 unblock을 await(또는 .then 체이닝)한 시점엔 이미 sync 영속이 끝나 있어,
- *   해제 직후 팝업이 곧장 닫혀도 유실이 없다. → popup은 unblock 반환 Promise만 기다려
+ * 영속화 보장(계약 C3, 2026-10-05 갱신): store.unblock/importMany는 sync 쓰기가 완료된 뒤
+ *   resolve하고, 저장에 실패하면 변경을 되돌린 뒤 reject(err.code: QUOTA | CONTEXT_INVALIDATED |
+ *   WRITE_FAILED)한다. load는 읽기 실패 시 reject(READ_FAILED)한다. → popup은 반환 Promise만 기다려
  *   화면을 갱신하면 되고, 추가 flush 호출은 불필요(공개 flush API 없음).
  *   (구 store 내부 pagehide/visibilitychange 자동 flush(C8)는 stale 탭이 옛 목록을 되쓰는
  *    resurrection 원인이라 2026-06-15 제거됨 — 즉시 영속화라 안전망 불필요. 계약 §3 C8 참고.)
@@ -178,7 +178,19 @@
     els.state.appendChild(document.createTextNode(text));
   }
 
-  function showFatal() {
+  // store 실패(reject err.code) → 사용자 안내 문구.
+  function storeErrorMessage(e, what) {
+    var code = e && e.code;
+    if (code === 'CONTEXT_INVALIDATED') return '확장 프로그램이 업데이트되었습니다 — 팝업을 다시 열어 주세요.';
+    if (code === 'SCHEMA_NEWER') return what + ' 실패 — 다른 기기의 더 새 버전이 저장한 목록입니다. 확장을 업데이트해 주세요.';
+    if (code === 'QUOTA') {
+      var fit = e && typeof e.fit === 'number' ? ' 지금은 약 ' + e.fit + '명까지 더 저장할 수 있습니다.' : '';
+      return what + ' 실패 — 동기화 저장 공간(약 100KB)이 부족합니다.' + fit;
+    }
+    return what + ' 실패 — 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+  }
+
+  function showFatal(message) {
     if (els.count) els.count.textContent = '총 –명';
     if (els.list) els.list.textContent = '';
     // store 접근 불가 상태에서는 내보내기/가져오기도 동작 불가 → 버튼 비활성으로 오조작 방지.
@@ -187,7 +199,7 @@
     setState(
       'error',
       '⚠️',
-      '차단 목록을 불러오지 못했습니다.\n확장을 다시 로드한 뒤 팝업을 열어 주세요.'
+      message || '차단 목록을 불러오지 못했습니다.\n확장을 다시 로드한 뒤 팝업을 열어 주세요.'
     );
   }
 
@@ -287,18 +299,17 @@
 
   function onUnblock(it, btn) {
     btn.disabled = true;
-    // store.unblock은 내부적으로 flushPending()을 반환하므로, sync 쓰기가 이 클릭 핸들러
-    // 태스크 안에서 디스패치되고 쓰기 완료 후 resolve한다(계약 C3). 따라서 아래 .then(refresh)는
-    // 영속화가 끝난 뒤에 돌고, 해제 직후 팝업이 곧장 닫혀도 유실이 없다(추가 flush 호출 불필요).
-    // 영속 실패는 store가 reject 없이 내부 흡수·재시도(C7)하므로 .catch는 sync 쓰기 실패로는
-    // 발화하지 않고, unblock 호출 자체의 동기 예외(store 미탑재 등)에 대한 방어로만 남는다.
-    Promise.resolve(store.unblock(String(it.uid)))
+    // store.unblock은 sync 쓰기가 끝난 뒤 resolve한다(계약 C3). 실패하면 store가 해제를 되돌리고
+    // reject하므로, 오류를 알리고 목록을 다시 그린다(항목이 그대로 남아 재시도 가능 — 이슈 #13).
+    new Promise(function (resolve) { resolve(store.unblock(String(it.uid))); })
       .then(function () {
         refresh(); // store.list()/count() 재호출로 화면 즉시 갱신
       })
       .catch(function (e) {
         console.error('[FMK-Blind popup] unblock 실패', e);
+        setIoStatus('error', storeErrorMessage(e, '차단 해제'));
         btn.disabled = false; // 실패 시 같은 항목 재시도 허용
+        refresh();
       });
   }
 
@@ -431,7 +442,7 @@
   /**
    * 가져오기: 파일 → text() → JSON.parse → entries 추출 → importMany → 결과 표시 + 재렌더.
    * JSON.parse/파일 읽기 실패는 상태 메시지로만 알리고 throw하지 않는다.
-   * importMany는 비정상 항목을 invalid로 집계하며 throw하지 않는다(계약 C10).
+   * importMany는 비정상 항목을 invalid로 집계하고, 용량 초과(QUOTA, err.fit)·저장 실패는 reject한다(계약 C10).
    */
   function onImportFileChosen(ev) {
     var input = ev.target;
@@ -476,8 +487,10 @@
             setIoStatus('success', formatImportResult(added, skipped, invalid));
           })
           .catch(function (e) {
+            // 용량 초과면 아무것도 바뀌지 않고, 쓰기 실패면 store가 추가분을 되돌린다(계약 C10).
             console.error('[FMK-Blind popup] importMany 실패', e);
-            setIoStatus('error', '가져오기 중 오류가 발생했습니다.');
+            refresh();
+            setIoStatus('error', storeErrorMessage(e, '가져오기'));
           })
           .then(function () {
             setIoBusy(false);
@@ -568,18 +581,24 @@
     if (IS_TAB_VIEW) {
       document.body.classList.add('fmkb-tab-view');
       if (PARAMS.get('action') === 'import') {
-        setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.');
-        if (els.importBtn) els.importBtn.focus();
+        setIoStatus(null, '가져오기 버튼을 눌러 파일을 선택하세요.'); // 버튼 포커스는 목록을 읽은 뒤(활성화 후)
       }
     }
 
-    // load()는 계약상 실패해도 throw 안 함(C7) — 방어적으로 catch 후 빈/부분 목록 진행.
+    // load()는 읽기를 1회 재시도한 뒤에도 실패하면 reject한다(이슈 #14). 빈 목록을 정상인 척
+    // 보여 주지 않고 오류 상태로 멈춘다(가져오기·해제 비활성).
+    // 목록을 읽기 전엔 가져오기·내보내기를 막는다(중복 판정이 빈 목록 기준이 되거나 빈 파일을 내보내지 않게
+    // — 최종 리뷰 #23 M6).
+    if (els.importBtn) els.importBtn.disabled = true;
+    if (els.exportBtn) els.exportBtn.disabled = true;
     var loaded = typeof store.load === 'function' ? store.load() : Promise.resolve();
     Promise.resolve(loaded)
-      .catch(function (e) {
-        console.warn('[FMK-Blind popup] store.load 실패 — 가능한 범위로 표시', e);
-      })
       .then(function () {
+        if (els.exportBtn) els.exportBtn.disabled = false;
+        if (els.importBtn) {
+          els.importBtn.disabled = false;
+          if (IS_TAB_VIEW && PARAMS.get('action') === 'import') els.importBtn.focus();
+        }
         refresh();
 
         // 라이브 동기(가산적 7번째 API onChange, 계약 C9): 팝업이 열려 있는 동안 외부
@@ -588,14 +607,20 @@
         //   별도 unsubscribe 불필요(단수명 팝업).
         // - diff 인자는 사용하지 않는다 — store.list()/count() 전체 재조회로 충분하고,
         //   기존 refresh()가 캐시/인원수/렌더(검색 필터 포함)를 일괄 갱신한다.
-        // - 팝업 자신의 onUnblock은 '자기-쓰기'라 diff가 비어 이 콜백이 호출되지 않으므로
-        //   onUnblock의 명시적 .then(refresh)와 중복 갱신이 없다(계약 §C9·onChange 주석).
+        // - 팝업 자신의 해제가 성공하면 diff가 비어 이 콜백이 호출되지 않는다. 저장에 실패하면 store가
+        //   되돌린 변경을 통지하므로 onUnblock의 catch와 함께 두 번 갱신될 수 있으나 무해하다(계약 C7·C9).
         // - typeof 가드: onChange 미탑재(구버전 store)에도 안전 — 단순히 라이브 동기만 비활성.
         if (typeof store.onChange === 'function') {
           store.onChange(function () {
             refresh();
           });
         }
+      })
+      .catch(function (e) {
+        console.warn('[FMK-Blind popup] store.load 실패', e);
+        showFatal(e && e.code === 'CONTEXT_INVALIDATED'
+          ? '확장 프로그램이 업데이트되었습니다.\n팝업을 다시 열어 주세요.'
+          : '차단 목록을 불러오지 못했습니다.\n잠시 후 팝업을 다시 열어 주세요.');
       });
   }
 
