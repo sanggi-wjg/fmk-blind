@@ -48,6 +48,8 @@
   // 검색 입력 디바운스(ms): input 폭주 시 render 호출 빈도를 제한.
   // 60ms는 체감 즉시성(키입력 후 1프레임 남짓)과 렌더 부하의 절충값.
   var SEARCH_DEBOUNCE_MS = 60;
+  // 목록 읽기가 이보다 오래 걸릴 때만 '불러오는 중'을 띄운다(보통은 수 ms라 깜빡이지 않게).
+  var LOADING_HINT_DELAY_MS = 150;
 
   // 내보내기 파일 포맷(팀 합의). 가져오기는 이 포맷의 entries 배열과 bare 배열을 관용 수용한다.
   var EXPORT_SCHEMA = 'fmk-blind/blocklist';
@@ -82,6 +84,9 @@
   // store.list() 스냅샷 캐시. 검색은 이 캐시 위에서만 필터(매 입력마다 store 재호출 안 함).
   var allItems = [];
   var query = '';
+  // 목록을 처음 읽기 전·읽기 실패 화면에선 검색이 화면을 다시 그리지 않는다(빈 목록·"총 0명"으로 덮여
+  // 로딩 안내·[다시 시도]가 사라지지 않게 — 이슈 #14 원칙). 입력한 검색어는 읽은 뒤 적용된다.
+  var listReady = false;
 
   // 이번 팝업에서 해제한 유저(uid → {uid, nick, addedAt}). 원래 자리에 '해제됨' 줄로 남겨 되돌릴 수 있게 한다.
   // 팝업을 닫으면 사라진다. 다른 곳에서 다시 차단되면 refresh가 지운다.
@@ -218,7 +223,12 @@
     return what + ' 실패 — 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.';
   }
 
-  function showFatal(message) {
+  /**
+   * 목록을 쓸 수 없는 상태(오류). retry를 주면 [다시 시도] 버튼을 붙인다(읽기 일시 오류 등).
+   * focusRetry: 다시 시도가 또 실패했을 때 새 버튼으로 포커스를 옮긴다(키보드 사용자가 이어서 누를 수 있게).
+   */
+  function showFatal(message, retry, focusRetry) {
+    listReady = false;
     if (els.count) els.count.textContent = '총 –명';
     if (els.list) els.list.textContent = '';
     // store 접근 불가 상태에서는 내보내기/가져오기도 동작 불가 → 버튼 비활성으로 오조작 방지.
@@ -229,18 +239,38 @@
       '⚠️',
       message || '차단 목록을 불러오지 못했습니다.\n확장을 다시 로드한 뒤 팝업을 열어 주세요.'
     );
+    if (typeof retry === 'function') {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'fmkb-retry';
+      btn.textContent = '다시 시도';
+      btn.addEventListener('click', function () {
+        retry();
+      });
+      els.state.appendChild(btn);
+      if (focusRetry) btn.focus();
+    }
   }
 
   // ── 인원수 ─────────────────────────────────────────────
 
-  function updateCount() {
-    var n;
-    try {
-      n = store.count();
-    } catch (e) {
-      n = allItems.length;
+  function matchesQuery(it, q) {
+    var nick = (it.nick || '').toLowerCase();
+    var uid = String(it.uid).toLowerCase();
+    return nick.indexOf(q) !== -1 || uid.indexOf(q) !== -1;
+  }
+
+  // 평소엔 "총 N명", 검색 중엔 "검색 K명 / 총 N명"(K = 차단 목록 중 검색어와 맞는 인원 — '해제됨' 줄은 제외).
+  // K·N 모두 마지막 refresh 의 목록 스냅샷(allItems)으로 센다(해제 저장 중 store.count()만 먼저 줄어 K > N 이 되지 않게).
+  // aria-live 영역이라 글자가 바뀔 때만 갱신한다(같은 문구를 다시 읽지 않게).
+  function updateCount(q) {
+    var text = '총 ' + allItems.length + '명';
+    if (q) {
+      var k = 0;
+      for (var i = 0; i < allItems.length; i++) if (matchesQuery(allItems[i], q)) k++;
+      text = '검색 ' + k + '명 / ' + text;
     }
-    els.count.textContent = '총 ' + n + '명';
+    if (els.count.textContent !== text) els.count.textContent = text;
   }
 
   // ── 항목 렌더 ──────────────────────────────────────────
@@ -343,12 +373,11 @@
     }
     if (q) {
       items = items.filter(function (it) {
-        var nick = (it.nick || '').toLowerCase();
-        var uid = String(it.uid).toLowerCase();
-        return nick.indexOf(q) !== -1 || uid.indexOf(q) !== -1;
+        return matchesQuery(it, q);
       });
     }
 
+    updateCount(q);
     els.list.textContent = '';
 
     if (allItems.length === 0 && undone.size === 0 && inflight.size === 0) {
@@ -698,7 +727,6 @@
     rowErrors.forEach(function (_, uid) {
       if (!busy.has(uid) && !store.isBlocked(uid) && !undone.has(uid)) rowErrors.delete(uid);
     });
-    updateCount();
     render();
   }
 
@@ -722,7 +750,7 @@
       'input',
       debounce(function () {
         query = els.search.value;
-        render();
+        if (listReady) render();
       }, SEARCH_DEBOUNCE_MS)
     );
 
@@ -747,42 +775,82 @@
       }
     }
 
-    // load()는 읽기를 1회 재시도한 뒤에도 실패하면 reject한다(이슈 #14). 빈 목록을 정상인 척
-    // 보여 주지 않고 오류 상태로 멈춘다(가져오기·해제 비활성).
-    // 목록을 읽기 전엔 가져오기·내보내기를 막는다(중복 판정이 빈 목록 기준이 되거나 빈 파일을 내보내지 않게
-    // — 최종 리뷰 #23 M6).
+    autofocusSearch();
+    startLoad(false);
+  }
+
+  // 팝업을 열면 바로 검색할 수 있게 검색창에 포커스. 터치 기기는 화상 키보드가 튀어나오므로 하지 않고,
+  // 가져오기 탭 보기에선 가져오기 버튼이 포커스를 받는다.
+  function autofocusSearch() {
+    if (IS_TOUCH || (IS_TAB_VIEW && PARAMS.get('action') === 'import')) return;
+    try {
+      els.search.focus({ preventScroll: true });
+    } catch (e) {
+      /* 포커스 불가 */
+    }
+  }
+
+  // load()는 읽기를 1회 재시도한 뒤에도 실패하면 reject한다(이슈 #14). 빈 목록을 정상인 척
+  // 보여 주지 않고 오류 상태로 멈춘다(가져오기·해제 비활성). 일시 오류면 [다시 시도]로 다시 읽는다
+  // (실패한 load는 store가 캐시하지 않는다 — 계약 C2).
+  // 목록을 읽기 전엔 가져오기·내보내기를 막는다(중복 판정이 빈 목록 기준이 되거나 빈 파일을 내보내지 않게
+  // — 최종 리뷰 #23 M6).
+  var subscribed = false;
+  function startLoad(fromRetry) {
     if (els.importBtn) els.importBtn.disabled = true;
     if (els.exportBtn) els.exportBtn.disabled = true;
+    // 다시 시도는 누른 즉시 진행 중임을 보여 주고(오류 문구·버튼을 바로 바꿈), 첫 로드는 오래 걸릴 때만 띄운다.
+    var hint = setTimeout(function () {
+      setState('loading', '', '차단 목록을 불러오는 중…');
+    }, fromRetry ? 0 : LOADING_HINT_DELAY_MS);
     var loaded = typeof store.load === 'function' ? store.load() : Promise.resolve();
     Promise.resolve(loaded)
       .then(function () {
+        clearTimeout(hint);
+        listReady = true;
+        query = els.search.value; // 읽는 동안 친 검색어 반영
         if (els.exportBtn) els.exportBtn.disabled = false;
         if (els.importBtn) {
           els.importBtn.disabled = false;
           if (IS_TAB_VIEW && PARAMS.get('action') === 'import') els.importBtn.focus();
         }
         refresh();
+        // 다시 시도 버튼은 방금 사라졌으므로 검색창으로(첫 로드에선 init이 이미 포커스함).
+        if (fromRetry && (!document.activeElement || document.activeElement === document.body)) {
+          autofocusSearch();
+        }
 
         // 라이브 동기(가산적 7번째 API onChange, 계약 C9): 팝업이 열려 있는 동안 외부
         // (fmkorea 탭 우클릭 차단/해제, 다른 기기 sync)에서 목록이 바뀌면 자동 재렌더.
-        // - 최초 load→refresh 이후 1회만 등록(중복 구독 방지). 구독은 팝업 종료와 함께 GC되므로
-        //   별도 unsubscribe 불필요(단수명 팝업).
+        // - 첫 로드 성공 때 1회만 등록(다시 시도로 여러 번 와도 중복 구독 방지). 구독은 팝업 종료와 함께
+        //   GC되므로 별도 unsubscribe 불필요(단수명 팝업).
         // - diff 인자는 사용하지 않는다 — store.list()/count() 전체 재조회로 충분하고,
         //   기존 refresh()가 캐시/인원수/렌더(검색 필터 포함)를 일괄 갱신한다.
         // - 팝업 자신의 해제가 성공하면 diff가 비어 이 콜백이 호출되지 않는다. 저장에 실패하면 store가
         //   되돌린 변경을 통지하므로 해제·되돌리기 실패 처리(endRowWork)와 함께 두 번 갱신될 수 있으나 무해하다(계약 C7·C9).
         // - typeof 가드: onChange 미탑재(구버전 store)에도 안전 — 단순히 라이브 동기만 비활성.
-        if (typeof store.onChange === 'function') {
+        if (!subscribed && typeof store.onChange === 'function') {
+          subscribed = true;
           store.onChange(function () {
             refresh();
           });
         }
       })
       .catch(function (e) {
+        clearTimeout(hint);
         console.warn('[FMK-Blind popup] store.load 실패', e);
-        showFatal(e && e.code === 'CONTEXT_INVALIDATED'
-          ? '확장 프로그램이 업데이트되었습니다.\n팝업을 다시 열어 주세요.'
-          : '차단 목록을 불러오지 못했습니다.\n잠시 후 팝업을 다시 열어 주세요.');
+        // 확장 업데이트로 컨텍스트가 무효화됐으면 다시 읽어도 소용없다 — 팝업을 다시 열도록 안내만.
+        if (e && e.code === 'CONTEXT_INVALIDATED') {
+          showFatal('확장 프로그램이 업데이트되었습니다.\n팝업을 다시 열어 주세요.');
+          return;
+        }
+        showFatal(
+          '차단 목록을 불러오지 못했습니다.\n잠시 후 다시 시도해 주세요.',
+          function () {
+            startLoad(true);
+          },
+          fromRetry
+        );
       });
   }
 

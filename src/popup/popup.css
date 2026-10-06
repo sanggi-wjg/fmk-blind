@@ -1,14 +1,37 @@
 /* FMK-Blind 팝업 — 바닐라 CSS, 의존성 없음 */
 
 :root {
+  /* 검색창·스크롤바 등 브라우저 기본 컨트롤도 다크 모드를 따르게 */
+  color-scheme: light dark;
   --fmkb-bg: #ffffff;
   --fmkb-fg: #1a1a1a;
-  --fmkb-muted: #6b7280;
+  /* 회색·빨강 글자는 hover 줄(#f3f4f6) 위에서도 4.5:1 이상(회색 5.0, 빨강 5.2) */
+  --fmkb-muted: #636974;
   --fmkb-border: #e5e7eb;
   --fmkb-hover: #f3f4f6;
   --fmkb-accent: #2563eb;
-  --fmkb-danger: #dc2626;
+  --fmkb-danger: #c81e1e;
+  /* 흰 글자를 올리는 채움색(hover). 흰 글자 대비 4.5:1 이상인 색으로 라이트·다크 공통이다(글자색 토큰과 따로 둔다). */
+  --fmkb-accent-fill: #2563eb;
+  --fmkb-danger-fill: #dc2626;
   --fmkb-danger-hover: #b91c1c;
+  --fmkb-mark-bg: #fde68a;
+  --fmkb-mark-fg: #1a1a1a;
+}
+
+/* 다크 모드(OS·브라우저 설정). 글자 대비는 모두 4.5:1 이상(배경 #1f1f23 기준). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fmkb-bg: #1f1f23;
+    --fmkb-fg: #ececf1;
+    --fmkb-muted: #a1a1aa;
+    --fmkb-border: #3f3f46;
+    --fmkb-hover: #2a2a30;
+    --fmkb-accent: #60a5fa;
+    --fmkb-danger: #f87171;
+    --fmkb-mark-bg: #854d0e;
+    --fmkb-mark-fg: #fef9c3;
+  }
 }
 
 * {
@@ -73,6 +96,11 @@ body {
   border-radius: 6px;
   outline: none;
   background: var(--fmkb-bg);
+}
+
+.fmkb-search::placeholder {
+  color: var(--fmkb-muted); /* 브라우저 기본 placeholder 색은 다크 배경에서 대비가 모자람 */
+  opacity: 1;
 }
 
 .fmkb-search:focus {
@@ -156,7 +184,8 @@ body {
 }
 
 .fmkb-unblock:hover:not(:disabled) {
-  background: var(--fmkb-danger);
+  background: var(--fmkb-danger-fill);
+  border-color: var(--fmkb-danger-fill);
   color: #fff;
 }
 
@@ -183,7 +212,8 @@ body {
 }
 
 .fmkb-restore:hover:not(:disabled) {
-  background: var(--fmkb-accent);
+  background: var(--fmkb-accent-fill);
+  border-color: var(--fmkb-accent-fill);
   color: #fff;
 }
 
@@ -228,9 +258,31 @@ body {
   margin-bottom: 6px;
 }
 
+/* 읽기 실패 화면의 [다시 시도] */
+.fmkb-retry {
+  display: block;
+  margin: 12px auto 0;
+  padding: 7px 16px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fmkb-accent);
+  background: transparent;
+  border: 1px solid var(--fmkb-accent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.fmkb-retry:hover {
+  background: var(--fmkb-accent-fill);
+  border-color: var(--fmkb-accent-fill);
+  color: #fff;
+}
+
 /* 검색어 강조 표시 */
 .fmkb-mark {
-  background: #fde68a;
+  background: var(--fmkb-mark-bg);
+  color: var(--fmkb-mark-fg);
   border-radius: 2px;
   padding: 0 1px;
 }
@@ -325,7 +377,8 @@ body.fmkb-tab-view .fmkb-footer {
     font-size: 15px;
   }
   .fmkb-unblock,
-  .fmkb-restore {
+  .fmkb-restore,
+  .fmkb-retry {
     padding: 12px 14px;
     font-size: 14px;
   }
