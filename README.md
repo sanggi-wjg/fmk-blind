@@ -64,7 +64,7 @@
 - ⚠️ **PC와 차단 목록이 자동으로 공유되지 않는다.** Firefox for Android는 확장의 동기화 저장소(`storage.sync`)를 Firefox 계정과 동기화하지 않고 기기 안에만 저장한다([MDN `storage.sync`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/storage/sync), [Mozilla Bug 1625257](https://bugzilla.mozilla.org/show_bug.cgi?id=1625257) — 2026-11 확인 시 미해결). 같은 Firefox 계정으로 로그인해도 PC에서 차단한 유저가 모바일에 나타나지 않고, 반대도 마찬가지다.
   - **목록 맞추기**: PC 팝업에서 **내보내기** → JSON 파일을 폰으로 옮김 → 모바일 팝업에서 **가져오기**(위 *사용법* 참고). 가져오기는 추가만 하므로 해제는 양쪽에서 각각 해야 하고, 새로 차단할 때마다 다시 옮겨야 한다.
 
-> ⚠️ 모바일 실동작(롱프레스 메뉴·팝업, 팝업의 내보내기·가져오기 포함)은 **실기기 검증 단계**에 있다. PC(`www`)는 검증 완료.
+> ⚠️ 모바일 실동작(롱프레스 메뉴·팝업)은 **실기기 검증 단계**에 있다. 팝업의 **내보내기·가져오기는 Firefox for Android 실기기에서 동작 확인**(2026-11-17). PC(`www`)는 검증 완료.
 
 ## 참고·한계
 - 페이지 로드 시점에 1회 스캔해 숨기고, 이후 **AJAX·무한스크롤·더보기로 새로 불러온 글·댓글**도 `MutationObserver` 증분 처리로 새로고침 없이 즉시 숨긴다.
