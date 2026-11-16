@@ -60,7 +60,7 @@ manifest의 고정 `key` 덕분에 확장 ID가 **`mnnofigckdchafggopgbjanmjmcbj
    ```
 3. 받은 `.xpi`를 `about:addons`에 드래그&드롭(또는 톱니 → "파일에서 부가 기능 설치")으로 영구 설치
 
-`browser_specific_settings.gecko.id` = **`raynor-back@proton.me`** 로 확장 ID가 고정 → 같은 Firefox 계정·동기화면 차단 목록(`storage.sync`) 공유.
+`browser_specific_settings.gecko.id` = **`raynor-back@proton.me`** 로 확장 ID가 고정 → 같은 Firefox 계정·동기화면 **데스크톱 Firefox 간** 차단 목록(`storage.sync`) 공유(Android는 제외 — §5).
 
 ### 2-3. AMO 공개 등록 (`listed`)
 
@@ -90,6 +90,8 @@ manifest의 고정 `key` 덕분에 확장 ID가 **`mnnofigckdchafggopgbjanmjmcbj
   선택한 기기의 Firefox에 확장이 임시 로드된다(핫리로드). `about:debugging`(데스크톱)에서 원격 디버깅도 가능.
 
 > 데스크톱 UA로 `m.` 주소 접속 시 `www`로 리다이렉트되므로 `m.` 매치는 사실상 모바일 기기 전용이다. 모바일 실동작(지연 렌더 댓글·롱프레스 메뉴·팝업)은 실기기 검증 단계.
+
+> ⚠️ **차단 목록은 데스크톱과 자동 공유되지 않는다.** Firefox for Android는 `storage.sync`를 Firefox 계정과 동기화하지 않고 기기 안에만 저장한다(§5). 데스크톱 목록은 팝업의 내보내기/가져오기로 직접 옮긴다.
 
 ---
 
@@ -126,10 +128,13 @@ npx web-ext sign --channel=unlisted|listed --api-key=… --api-secret=…  # AMO
 | | 동기화 계정 | 공유 범위 |
 |---|---|---|
 | Chrome `storage.sync` | 구글 계정 | Chrome 기기 간 |
-| Firefox `storage.sync` | Firefox 계정(로그인 + 동기화 켜짐) | Firefox 기기 간 |
+| Firefox(데스크톱) `storage.sync` | Firefox 계정(로그인 + 동기화 설정의 **부가 기능** 켜짐) | 데스크톱 Firefox 간 |
+| Firefox for Android `storage.sync` | 없음(동기화 안 됨) | 그 기기 안에만 저장 |
 
 - **Chrome ↔ Firefox 간에는 목록이 공유되지 않는다**(저장소가 완전히 분리). 동시 사용은 가능하나 각 브라우저가 자기 목록을 따로 관리한다.
-- 두 브라우저 목록 이전/병합은 팝업의 **내보내기/가져오기**(v0.5.0+)로 가능 — 한쪽에서 JSON 내보내기 → 다른 쪽에서 가져오기(신규만 추가·기존 유지). 사용법은 [`README.md`](README.md) 참고.
+- **Firefox for Android는 데스크톱 Firefox와도 공유되지 않는다.** Android판은 `storage.sync` API가 동작하지만 데이터를 Firefox 계정과 동기화하지 않는다([MDN `storage.sync`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/storage/sync): "Firefox for Android does not synchronize data with the user's account", [Mozilla Bug 1625257](https://bugzilla.mozilla.org/show_bug.cgi?id=1625257) — 2026-11 확인 시 미해결). 확장 설정으로 켤 수 있는 게 아니라 Firefox 쪽 제약이다.
+- 데스크톱 Firefox는 약 10분마다 또는 **지금 동기화**를 누를 때 확장 데이터를 동기화한다(MDN).
+- 브라우저 간·PC↔모바일 목록 이전/병합은 팝업의 **내보내기/가져오기**(v0.5.0+)로 가능 — 한쪽에서 JSON 내보내기 → 다른 쪽에서 가져오기(신규만 추가·기존 유지). 추가만 하므로 **한쪽에서 해제한 유저는 다른 쪽에 남는다**(각각 해제). 사용법은 [`README.md`](README.md) 참고. Android에서의 내보내기·가져오기(파일 저장·선택)는 실기기 미검증.
 
 ---
 
