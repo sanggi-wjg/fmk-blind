@@ -12,6 +12,7 @@ description: "FMK-Blind 차단 목록의 chrome.storage.sync 샤딩 저장 계�
 - 쓰기: 분당 120회, 시간당 1,800회. → block/unblock은 **바로 영속화(awaitable)**하고 바뀐 청크만 기록(수동 차단/해제 빈도에선 한도 무해).
 - 용량은 Chrome 방식으로 잰다: 키 + base::JSONWriter 직렬화의 UTF-8 바이트. `JSON.stringify`와 다른 점은 `<`·U+2028/9를 6바이트(`\uXXXX`)로 쓰고 int32 밖 숫자(addedAt)에 ".0"을 붙이는 것뿐이라, 이 둘만 보정한다(제어문자는 `JSON.stringify`도 같은 방식으로 이스케이프).
 - `unlimitedStorage` 권한은 sync에 효과 없음(local 전용).
+- **Firefox for Android는 `storage.sync`를 계정과 동기화하지 않는다**(기기 안에만 저장 — MDN `storage.sync`, Mozilla Bug 1625257, 2026-11 확인 시 미해결). API는 그대로 동작하므로 코드 분기는 필요 없지만, "기기 간 동기화"를 문서·안내에 쓸 때 모바일을 포함하지 말 것. PC↔모바일은 내보내기/가져오기로 수동 이관.
 
 ## 저장 레이아웃
 - `bl_meta` = `{ ver: 1 }` — 스키마 버전(향후 압축/구조 변경 마이그레이션 기준).
